@@ -1,5 +1,6 @@
 package org.graphiks.kalligraphie.layout
 
+import org.graphiks.kalligraphie.api.AutomaticHyphenBreaks
 import org.graphiks.kalligraphie.api.BaseDirection
 import org.graphiks.kalligraphie.api.BidiRun
 import org.graphiks.kalligraphie.api.CaretCandidate
@@ -7,36 +8,47 @@ import org.graphiks.kalligraphie.api.CaretPosition
 import org.graphiks.kalligraphie.api.CoverageStatus
 import org.graphiks.kalligraphie.api.EditableLine
 import org.graphiks.kalligraphie.api.EditableLineDiagnostic
+import org.graphiks.kalligraphie.api.EditableLineDiagnosticSeverity
 import org.graphiks.kalligraphie.api.EditableLineError
 import org.graphiks.kalligraphie.api.EditableLineMaterialization
 import org.graphiks.kalligraphie.api.EditableLineRequest
 import org.graphiks.kalligraphie.api.EditableLineResult
+import org.graphiks.kalligraphie.api.EllipsisSide
 import org.graphiks.kalligraphie.api.FontError
 import org.graphiks.kalligraphie.api.FontInstance
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.GdefLigatureCaretFact
+import org.graphiks.kalligraphie.api.HyphenationMode
 import org.graphiks.kalligraphie.api.LayoutBounds
 import org.graphiks.kalligraphie.api.LayoutContinuation
 import org.graphiks.kalligraphie.api.LayoutPoint
 import org.graphiks.kalligraphie.api.LayoutRect
-import org.graphiks.kalligraphie.api.LayoutUnit
-import org.graphiks.kalligraphie.api.LineBreakKind
-import org.graphiks.kalligraphie.api.LineBreakAnalysis
-import org.graphiks.kalligraphie.api.LineContentMetrics
-import org.graphiks.kalligraphie.api.LineLayout
-import org.graphiks.kalligraphie.api.LogicalNavigationDirection
-import org.graphiks.kalligraphie.api.ParagraphLayout
-import org.graphiks.kalligraphie.api.ParagraphLayoutError
 import org.graphiks.kalligraphie.api.ParagraphLayoutRequest
 import org.graphiks.kalligraphie.api.ParagraphLayoutResult
 import org.graphiks.kalligraphie.api.ParagraphLayouter
+import org.graphiks.kalligraphie.api.HorizontalParagraphConstraints
+import org.graphiks.kalligraphie.api.ParagraphPositioningPolicy
+import org.graphiks.kalligraphie.api.HyphenationService
+import org.graphiks.kalligraphie.api.TextSnapshot
+import org.graphiks.kalligraphie.api.LayoutUnit
+import org.graphiks.kalligraphie.api.LineBreakAnalysis
+import org.graphiks.kalligraphie.api.LineBreakKind
+import org.graphiks.kalligraphie.api.LineContentMetrics
+import org.graphiks.kalligraphie.api.LineEllipsisPolicy
+import org.graphiks.kalligraphie.api.LineLayout
+import org.graphiks.kalligraphie.api.LogicalNavigationDirection
+import org.graphiks.kalligraphie.api.OverflowPolicy
+import org.graphiks.kalligraphie.api.ParagraphLayout
+import org.graphiks.kalligraphie.api.ParagraphLayoutError
 import org.graphiks.kalligraphie.api.ParagraphMaterializationIdentity
+import org.graphiks.kalligraphie.api.ParagraphTruncation
 import org.graphiks.kalligraphie.api.ScriptLanguageRun
 import org.graphiks.kalligraphie.api.ShapedGlyph
 import org.graphiks.kalligraphie.api.ShapedGlyphRun
 import org.graphiks.kalligraphie.api.ShaperCluster
 import org.graphiks.kalligraphie.api.ShaperClusterToken
 import org.graphiks.kalligraphie.api.ShapingDirection
+import org.graphiks.kalligraphie.api.SoftHyphenLinePolicy
 import org.graphiks.kalligraphie.api.TextIndex
 import org.graphiks.kalligraphie.api.TextRange
 import org.graphiks.kalligraphie.api.UnicodeAnalysis
@@ -63,6 +75,7 @@ internal sealed interface ParagraphCompositionResult {
         lines: List<ComposedParagraphLine>,
         val remainingSourceRange: TextRange?,
         val hasUnplacedTrailingEmptyLine: Boolean = false,
+        val truncation: ParagraphTruncation? = null,
     ) : ParagraphCompositionResult {
         val lines: List<ComposedParagraphLine> = lines.immutableSnapshot()
     }
@@ -208,6 +221,26 @@ public object ParagraphComposer : ParagraphLayouter {
                 )
             ) {
                 is FinalizationResult.Success -> {
+                    val ellipsisPolicy = request.overflowPolicy as? OverflowPolicy.Ellipsis
+                    val middleWanted = ellipsisPolicy?.side == EllipsisSide.MIDDLE && lineStart == request.sourceRange.start
+                    if ((!selected.fits || middleWanted) && ellipsisPolicy != null) {
+                        val truncated = truncateCurrentLine(
+                            request = request,
+                            lineStart = lineStart,
+                            candidates = candidatesForLine(request, lineStart),
+                            sourceClusters = sourceClusters,
+                            provisionalRuns = provisionalRuns,
+                            materialization = materialization,
+                        )
+                        if (truncated != null) {
+                            placed += place(truncated.line, region, lineTop, truncated.fontInstances)
+                            return ParagraphCompositionResult.Success(
+                                lines = placed,
+                                remainingSourceRange = null,
+                                truncation = truncated.truncation,
+                            )
+                        }
+                    }
                     check(selected.line.range.endExclusive > lineStart) {
                         "Paragraph composition must strictly advance at every selected line."
                     }
@@ -265,11 +298,19 @@ public object ParagraphComposer : ParagraphLayouter {
             TextRange(request.sourceRange.start, remaining.start)
         }
         val layout = FinalParagraphLayout(request.snapshot, request.lineBreakAnalysis, range, projectedLines)
-        return ParagraphLayoutResult.Success(
-            layout = layout,
-            coverageStatus = if (continuation == null) CoverageStatus.COMPLETE else CoverageStatus.PARTIAL,
-            continuation = continuation,
-        )
+        return if (composition.truncation != null) {
+            ParagraphLayoutResult.Success(
+                layout = layout,
+                coverageStatus = CoverageStatus.TRUNCATED,
+                truncation = composition.truncation,
+            )
+        } else {
+            ParagraphLayoutResult.Success(
+                layout = layout,
+                coverageStatus = if (continuation == null) CoverageStatus.COMPLETE else CoverageStatus.PARTIAL,
+                continuation = continuation,
+            )
+        }
     }
 
     private fun projectLine(
@@ -384,10 +425,45 @@ public object ParagraphComposer : ParagraphLayouter {
         }
         val firstMandatory = opportunities.firstOrNull { it.kind == LineBreakKind.MANDATORY }
         val terminal = firstMandatory?.boundary ?: request.sourceRange.endExclusive
+        val automatic = if (request.hyphenationMode == HyphenationMode.AUTO) {
+            automaticCandidatesInSegment(request, start, terminal)
+        } else {
+            emptyList()
+        }
         return buildList {
             opportunities.takeWhile { opportunity -> opportunity.boundary <= terminal }.forEach { add(it.boundary) }
+            addAll(automatic)
             if (lastOrNull() != terminal) add(terminal)
+        }.distinct().sortedWith(TextIndex::compareTo)
+    }
+
+    /** Service candidates strictly inside the segment, when the service serves the language. */
+    private fun automaticCandidatesInSegment(request: ParagraphLayoutRequest, start: TextIndex, terminal: TextIndex): List<TextIndex> {
+        val service = request.hyphenationService ?: return emptyList()
+        if (!service.identity.languagesSnapshot.contains(request.language)) return emptyList()
+        val textScalars = request.snapshot.scalars
+        val startOrdinal = snapshotOrdinal(request.snapshot, start)
+        val terminalOrdinal = snapshotOrdinal(request.snapshot, terminal)
+        val result = mutableListOf<TextIndex>()
+        var cursor = startOrdinal
+        while (cursor < terminalOrdinal) {
+            if (!textScalars[cursor].isHyphenationLetter()) {
+                cursor += 1
+                continue
+            }
+            var wordEnd = cursor
+            while (wordEnd < terminalOrdinal && textScalars[wordEnd].isHyphenationLetter()) wordEnd += 1
+            if (wordEnd - cursor >= MIN_WORD_SCALARS) {
+                val word = textScalars.subList(cursor, wordEnd).toList()
+                service.hyphenation(word, request.language).forEach { offset ->
+                    if (offset > 0 && offset < word.size) {
+                        result += request.snapshot.textIndexAtScalarBoundary(cursor + offset)
+                    }
+                }
+            }
+            cursor = wordEnd
         }
+        return result
     }
 
     private fun selectFinalLine(
@@ -410,7 +486,7 @@ public object ParagraphComposer : ParagraphLayouter {
             when (finalized) {
                 is FinalizationResult.Success -> {
                     val fits = ExactEditableLineLayouter.inlineAdvance(finalized.line).value <= request.constraints.width.value
-                    if (fits || boundary == candidates.first()) return finalized
+                    if (fits || boundary == candidates.first()) return finalized.copy(fits = fits)
                 }
                 is FinalizationResult.Failure -> return finalized
                 is FinalizationResult.Cancelled -> return finalized
@@ -425,11 +501,15 @@ public object ParagraphComposer : ParagraphLayouter {
         sourceClusters: List<TextRange>,
         provisionalRuns: List<ShapedGlyphRun>,
         materialization: EditableLineMaterialization,
+        ellipsis: LineEllipsisPolicy? = null,
     ): FinalizationResult {
         val finalAnalysis = analysisForLine(request, lineRange, resetLineTrailingWhitespace = true)
         val finalRuns = mutableListOf<ShapedGlyphRun>()
         val instances = mutableListOf<FontInstance>()
         val diagnostics = mutableListOf<EditableLineDiagnostic>()
+        if (request.hyphenationMode == HyphenationMode.AUTO && request.hyphenationService == null) {
+            diagnostics += hyphenationServiceAbsentDiagnostic()
+        }
         finalShapingRanges(request, lineRange, sourceClusters, provisionalRuns).forEach { contextRange ->
             if (request.cancellationToken.isCancellationRequested()) return FinalizationResult.Cancelled(diagnostics)
             when (
@@ -466,6 +546,14 @@ public object ParagraphComposer : ParagraphLayouter {
                     fontInstances = uniqueInstances,
                     verticalMetrics = request.constraints.lineMetrics,
                     materialization = materialization,
+                    softHyphenPolicy = lineSoftHyphenPolicy(request, lineRange),
+                    snapshot = request.snapshot,
+                    positioning = request.positioning,
+                    targetInlineExtent = request.constraints.width,
+                    isLastLine = lineRange.endExclusive == request.sourceRange.endExclusive,
+                    automaticHyphenBreaks = lineAutomaticBreaks(request, lineRange),
+                    ellipsis = ellipsis,
+                    inlineObjects = request.inlineObjects,
                     cancellationToken = request.cancellationToken,
                 ),
             )
@@ -477,9 +565,11 @@ public object ParagraphComposer : ParagraphLayouter {
                     verticalMetrics = positioned.line.verticalMetrics,
                     positionedGlyphRuns = positioned.line.positionedGlyphRuns,
                     caretCandidates = positioned.line.allCaretCandidates,
+                    inlineObjects = positioned.line.positionedInlineObjects,
                     diagnostics = positioned.line.diagnostics + diagnostics,
                 ),
                 fontInstances = uniqueInstances,
+                fits = true,
             )
             is EditableLineResult.Failure -> FinalizationResult.Failure(positioned.error, diagnostics + positioned.diagnostics)
             is EditableLineResult.Cancelled -> FinalizationResult.Cancelled(diagnostics + positioned.diagnostics)
@@ -712,6 +802,149 @@ public object ParagraphComposer : ParagraphLayouter {
         return reordered
     }
 
+    private data class TruncatedLine(
+        val line: EditableLine,
+        val fontInstances: List<FontInstance>,
+        val truncation: ParagraphTruncation,
+    )
+
+    /**
+     * Publishes a single truncated line for the complete requested source range.
+     *
+     * The truncation anchor [b0] (and [b1] for middle truncation) is chosen by
+     * measuring shaped prefix and suffix candidates with a synthetic ellipsis
+     * marker. Hidden content is described explicitly by [ParagraphTruncation];
+     * the published line keeps the complete source range with suppressed glyphs
+     * for the hidden scalars. Returns `null` when no candidate configuration
+     * can publish a marker within the region, in which case the caller keeps
+     * the ordinary over-wide line behavior.
+     */
+    private fun truncateCurrentLine(
+        request: ParagraphLayoutRequest,
+        lineStart: TextIndex,
+        candidates: List<TextIndex>,
+        sourceClusters: List<TextRange>,
+        provisionalRuns: List<ShapedGlyphRun>,
+        materialization: EditableLineMaterialization,
+    ): TruncatedLine? {
+        val ellipsis = request.overflowPolicy as? OverflowPolicy.Ellipsis ?: return null
+        if (request.sourceRange.start != request.sourceRange.endExclusive &&
+            (request.sourceRange.start != lineStart)
+        ) {
+            return null
+        }
+        val terminal = candidates.lastOrNull() ?: return null
+        val width = request.constraints.width.value.toDouble()
+        val prefixWidths = mutableMapOf<TextIndex, Double>()
+        val prefixInstances = mutableMapOf<TextIndex, List<FontInstance>>()
+        val measureBoundaries = (sourceClusters.map { it.endExclusive } + lineStart).distinct().sortedWith(TextIndex::compareTo)
+            .filter { boundary -> boundary > lineStart && boundary <= terminal }
+        measureBoundaries.asReversed().forEach { boundary ->
+            when (val finalized = finalizeLine(request, TextRange(lineStart, boundary), sourceClusters, provisionalRuns, materialization)) {
+                is FinalizationResult.Success -> {
+                    prefixWidths[boundary] = ExactEditableLineLayouter.inlineAdvance(finalized.line).value.toDouble()
+                    prefixInstances[boundary] = finalized.fontInstances
+                }
+                else -> Unit
+            }
+        }
+        val markerWidth = widthOfEllipsisMarker(prefixInstances.values.firstOrNull().orEmpty())
+        val terminalWidth = prefixWidths[terminal] ?: return null
+        val side = ellipsis.side
+        return when (side) {
+            EllipsisSide.INLINE_END -> {
+                val b0 = prefixWidths.entries
+                    .lastOrNull { (boundary, w) -> w + markerWidth <= width }?.key ?: return null
+                truncateWithPolicy(request, sourceClusters, provisionalRuns, materialization,
+                    TextRange(b0, terminal), side, markerWidth, width, prefixInstances)
+            }
+            EllipsisSide.INLINE_START -> {
+                val suffixCandidates = measureBoundaries
+                var chosen = TextRange(lineStart, lineStart)
+                var suffixFound = false
+                suffixCandidates.asReversed().forEach { boundary ->
+                    if (suffixFound) return@forEach
+                    val suffixRange = TextRange(boundary, terminal)
+                    if (suffixRange.start == suffixRange.endExclusive) return@forEach
+                    if (prefixWidths[boundary] != null) {
+                        val suffixWidth = terminalWidth - (prefixWidths[boundary] ?: 0.0)
+                        if (suffixWidth + markerWidth <= width) {
+                            chosen = suffixRange
+                            suffixFound = true
+                        }
+                    }
+                }
+                if (!suffixFound) return null
+                truncateWithPolicy(request, sourceClusters, provisionalRuns, materialization,
+                    TextRange(lineStart, chosen.start), side, markerWidth, width, prefixInstances)
+            }
+            EllipsisSide.MIDDLE -> {
+                var suffixStart: TextIndex? = null
+                var suffixWidth = 0.0
+                measureBoundaries.asReversed().forEach { boundary ->
+                    if (suffixStart != null) return@forEach
+                    val suffixRange = TextRange(boundary, terminal)
+                    if (suffixRange.start == suffixRange.endExclusive) return@forEach
+                    val w = prefixWidths[boundary]?.let { terminalWidth - it } ?: 0.0
+                    if (w + markerWidth <= width) {
+                        suffixStart = boundary
+                        suffixWidth = w
+                    }
+                }
+                val startB0 = suffixStart ?: return null
+                val b0 = prefixWidths.entries
+                    .sortedWith { left, right -> left.key.compareTo(right.key) }
+                    .lastOrNull { (_, w) -> w + markerWidth + suffixWidth <= width }?.key ?: return null
+                truncateWithPolicy(request, sourceClusters, provisionalRuns, materialization,
+                    TextRange(b0, startB0), side, markerWidth, width, prefixInstances)
+            }
+        }
+    }
+
+    private fun truncateWithPolicy(
+        request: ParagraphLayoutRequest,
+        sourceClusters: List<TextRange>,
+        provisionalRuns: List<ShapedGlyphRun>,
+        materialization: EditableLineMaterialization,
+        hiddenRange: TextRange,
+        side: EllipsisSide,
+        markerWidth: Double,
+        width: Double,
+        prefixInstances: Map<TextIndex, List<FontInstance>>,
+    ): TruncatedLine? {
+        val fullRange = request.sourceRange
+        val finalized = finalizeLine(
+            request = request,
+            lineRange = fullRange,
+            sourceClusters = sourceClusters,
+            provisionalRuns = provisionalRuns,
+            materialization = materialization,
+            ellipsis = LineEllipsisPolicy(side, hiddenRange),
+        )
+        return when (finalized) {
+            is FinalizationResult.Success -> {
+                val anchor = when (side) {
+                    EllipsisSide.INLINE_START -> hiddenRange.endExclusive
+                    EllipsisSide.INLINE_END, EllipsisSide.MIDDLE -> hiddenRange.start
+                }
+                TruncatedLine(finalized.line, finalized.fontInstances, ParagraphTruncation(hiddenRange, anchor, side))
+            }
+            else -> null
+        }
+    }
+
+    private fun widthOfEllipsisMarker(instances: List<FontInstance>): Double {
+        val instance = instances.firstOrNull() ?: return 0.0
+        val glyph = (instance.resolveGlyph(0x2026) as? FontOperationResult.Success)?.value
+        if (glyph != null && glyph.glyphId.value != 0) {
+            val adv = (instance.metrics(glyph.glyphId) as? FontOperationResult.Success)?.value?.advanceWidth
+            if (adv != null) return adv.value.toDouble()
+        }
+        val dot = (instance.resolveGlyph(0x2E) as? FontOperationResult.Success)?.value?.glyphId
+        val dotAdv = dot?.let { (instance.metrics(it) as? FontOperationResult.Success)?.value?.advanceWidth }
+        return if (dotAdv != null) dotAdv.value.toDouble() * 3.0 else 0.0
+    }
+
     private fun emptyLine(
         request: ParagraphLayoutRequest,
         range: TextRange,
@@ -731,9 +964,105 @@ public object ParagraphComposer : ParagraphLayouter {
             emptyLineBidiLevel = if (request.baseDirection == BaseDirection.LEFT_TO_RIGHT) 0 else 1,
             verticalMetrics = request.constraints.lineMetrics,
             materialization = materialization,
+            softHyphenPolicy = SoftHyphenLinePolicy(emptyList()),
+            snapshot = request.snapshot,
+            positioning = request.positioning,
+            targetInlineExtent = request.constraints.width,
+            isLastLine = true,
             cancellationToken = request.cancellationToken,
         ),
     )
+
+    /**
+     * Returns the soft-hyphen handling for a finalized line.
+     *
+     * A visible hyphen is published only when the line ends exactly after a
+     * soft-hyphen scalar and content follows that boundary in the requested
+     * source range, i.e. the soft hyphen was used as a wrap opportunity.
+     * Every other soft hyphen stays suppressed.
+     */
+    /**
+     * Returns automatic hyphen breaks materialized on a finalized line.
+     *
+     * A break is materialized when the line ends exactly at an automatic
+     * service candidate inside a word and content follows in the requested
+     * source range.
+     */
+    private fun lineAutomaticBreaks(request: ParagraphLayoutRequest, lineRange: TextRange): AutomaticHyphenBreaks? {
+        if (request.hyphenationMode != HyphenationMode.AUTO) return null
+        if (lineRange.start == lineRange.endExclusive) return null
+        val service = request.hyphenationService ?: return null
+        val end = lineRange.endExclusive
+        if (end == request.sourceRange.endExclusive) return null
+        if (!service.identity.languagesSnapshot.contains(request.language)) return null
+        val endOrdinal = snapshotOrdinal(request.snapshot, end)
+        val textScalars = request.snapshot.scalars
+        if (endOrdinal <= 0 || endOrdinal > textScalars.size || !textScalars[endOrdinal - 1].isHyphenationLetter()) {
+            return null
+        }
+        var wordStart = endOrdinal - 1
+        while (wordStart > 0 && textScalars[wordStart - 1].isHyphenationLetter()) wordStart -= 1
+        var wordEnd = endOrdinal
+        val paragraphEnd = snapshotOrdinal(request.snapshot, request.sourceRange.endExclusive)
+        while (wordEnd < paragraphEnd && textScalars[wordEnd].isHyphenationLetter()) wordEnd += 1
+        val word = textScalars.subList(wordStart, wordEnd).toList()
+        if (word.size < MIN_WORD_SCALARS) return null
+        val breaks = service.hyphenation(word, request.language)
+        return if (endOrdinal - wordStart in breaks) AutomaticHyphenBreaks(listOf(end)) else null
+    }
+
+    private fun automaticBreakCandidates(request: ParagraphLayoutRequest, start: TextIndex, endExclusive: TextIndex): Set<TextIndex> {
+        val service = request.hyphenationService ?: return emptySet()
+        val textScalars = request.snapshot.scalars
+        val startOrdinal = snapshotOrdinal(request.snapshot, start)
+        val endOrdinal = snapshotOrdinal(request.snapshot, endExclusive)
+        val candidates = mutableSetOf<TextIndex>()
+        var cursor = startOrdinal
+        while (cursor < endOrdinal) {
+            if (!textScalars[cursor].isHyphenationLetter()) {
+                cursor += 1
+                continue
+            }
+            var wordEnd = cursor
+            while (wordEnd < endOrdinal && textScalars[wordEnd].isHyphenationLetter()) wordEnd += 1
+            if (wordEnd - cursor >= MIN_WORD_SCALARS && service.identity.languagesSnapshot.contains(request.language)) {
+                val word = textScalars.subList(cursor, wordEnd).toList()
+                service.hyphenation(word, request.language).forEach { offset ->
+                    if (offset > 0 && offset < word.size) {
+                        candidates += request.snapshot.textIndexAtScalarBoundary(cursor + offset)
+                    }
+                }
+            }
+            cursor = wordEnd
+        }
+        return candidates
+    }
+
+    private fun snapshotOrdinal(snapshot: org.graphiks.kalligraphie.api.TextSnapshot, boundary: TextIndex): Int {
+        require(boundary.sharesVersionWith(snapshot.range.start)) { "Hyphenation boundaries must use the paragraph source revision." }
+        return (0..snapshot.scalars.size).firstOrNull { index -> snapshot.textIndexAtScalarBoundary(index) == boundary }
+            ?: throw IllegalArgumentException("Hyphenation boundary does not belong to the paragraph snapshot.")
+    }
+
+    private fun Int.isHyphenationLetter(): Boolean =
+        this in 0x41..0x5A || this in 0x61..0x7A || this in 0xC0..0x24F
+
+    private fun hyphenationServiceAbsentDiagnostic(): EditableLineDiagnostic = EditableLineDiagnostic(
+        code = "layout.hyphenation-service-absent",
+        severity = EditableLineDiagnosticSeverity.WARNING,
+        message = "Automatic hyphenation was requested without an available versioned hyphenation service; the layout stays valid without automatic césure.",
+    )
+
+    private fun lineSoftHyphenPolicy(request: ParagraphLayoutRequest, lineRange: TextRange): SoftHyphenLinePolicy {
+        if (lineRange.start == lineRange.endExclusive) return SoftHyphenLinePolicy(emptyList())
+        val end = lineRange.endExclusive
+        if (end == request.sourceRange.endExclusive) return SoftHyphenLinePolicy(emptyList())
+        return if (request.snapshot.scalarPreceding(end) == SOFT_HYPHEN_SCALAR) {
+            SoftHyphenLinePolicy(listOf(end))
+        } else {
+            SoftHyphenLinePolicy(emptyList())
+        }
+    }
 
     private fun place(
         line: EditableLine,
@@ -851,6 +1180,7 @@ public object ParagraphComposer : ParagraphLayouter {
         data class Success(
             val line: EditableLine,
             val fontInstances: List<FontInstance>,
+            val fits: Boolean,
         ) : FinalizationResult
         data class Failure(val error: EditableLineError, val diagnostics: List<EditableLineDiagnostic>) : FinalizationResult
         data class Cancelled(val diagnostics: List<EditableLineDiagnostic>) : FinalizationResult
@@ -916,7 +1246,7 @@ private fun EditableLineError.toParagraphError(): ParagraphLayoutError = when (t
 
 private class ParagraphGeometryOverflowException(message: String) : IllegalStateException(message)
 
-private fun <Element> Iterable<Element>.immutableSnapshot(): List<Element> = ParagraphImmutableList(toList())
+    private fun <Element> Iterable<Element>.immutableSnapshot(): List<Element> = ParagraphImmutableList(toList())
 
 private class ParagraphImmutableList<Element>(source: List<Element>) : AbstractMutableList<Element>() {
     private val elements: List<Element> = source.toList()
@@ -934,3 +1264,9 @@ private class ParagraphImmutableList<Element>(source: List<Element>) : AbstractM
 
     private fun <Value> immutableMutation(): Value = throw UnsupportedOperationException("Immutable paragraph composition snapshot.")
 }
+
+/** Unicode scalar value of `U+00AD SOFT HYPHEN`. */
+private const val SOFT_HYPHEN_SCALAR: Int = 0x00AD
+
+/** Minimum scalars required to consider automatic hyphenation of a word. */
+private const val MIN_WORD_SCALARS: Int = 6

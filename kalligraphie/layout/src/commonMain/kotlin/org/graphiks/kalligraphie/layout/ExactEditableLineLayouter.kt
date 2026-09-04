@@ -1,5 +1,8 @@
 package org.graphiks.kalligraphie.layout
 
+import kotlin.math.ceil
+import kotlin.math.max
+
 import org.graphiks.kalligraphie.api.CaretAffinity
 import org.graphiks.kalligraphie.api.CaretBoundaryEdge
 import org.graphiks.kalligraphie.api.CaretCandidate
@@ -14,25 +17,34 @@ import org.graphiks.kalligraphie.api.EditableLineMaterialization
 import org.graphiks.kalligraphie.api.EditableLineRequest
 import org.graphiks.kalligraphie.api.EditableLineResult
 import org.graphiks.kalligraphie.api.FontAccessRequirementsSnapshot
+import org.graphiks.kalligraphie.api.FontInstance
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontRenderAssetHandle
 import org.graphiks.kalligraphie.api.FontRenderAssetKey
 import org.graphiks.kalligraphie.api.GdefLigatureCaretState
+import org.graphiks.kalligraphie.api.GlyphId
 import org.graphiks.kalligraphie.api.GlyphMaterializationCertificate
 import org.graphiks.kalligraphie.api.GlyphMaterializationRoute
+import org.graphiks.kalligraphie.api.GlyphProvenance
+import org.graphiks.kalligraphie.api.GlyphProvenanceRole
 import org.graphiks.kalligraphie.api.GlyphRepresentation
 import org.graphiks.kalligraphie.api.LayoutPoint
+import org.graphiks.kalligraphie.api.LayoutRect
 import org.graphiks.kalligraphie.api.LayoutSegment
 import org.graphiks.kalligraphie.api.LayoutUnit
 import org.graphiks.kalligraphie.api.LayoutVector
 import org.graphiks.kalligraphie.api.MultiFontEditableLineRequest
 import org.graphiks.kalligraphie.api.PositionedGlyph
+import org.graphiks.kalligraphie.api.InlineObjectSnapshot
 import org.graphiks.kalligraphie.api.PositionedGlyphRun
+import org.graphiks.kalligraphie.api.PositionedInlineObject
 import org.graphiks.kalligraphie.api.ShapedGlyph
 import org.graphiks.kalligraphie.api.ShapedGlyphRun
 import org.graphiks.kalligraphie.api.ShaperCluster
+import org.graphiks.kalligraphie.api.SoftHyphenLinePolicy
 import org.graphiks.kalligraphie.api.TextIndex
 import org.graphiks.kalligraphie.api.TextRange
+import org.graphiks.kalligraphie.api.TextSnapshot
 
 /**
  * Pure portable implementation of [EditableLineLayouter] for one horizontal, non-wrapped line.
@@ -124,7 +136,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
     override fun layout(request: EditableLineRequest): EditableLineResult {
         val diagnostics = mutableListOf<EditableLineDiagnostic>()
         val placements = try {
-            positionRuns(request)
+            positionRuns(request, refineGlyphs(request, diagnostics))
         } catch (overflow: GeometryOverflowException) {
             return EditableLineResult.Failure(
                 EditableLineError.GeometryOverflow(overflow.message ?: "Editable line geometry overflowed."),
@@ -154,11 +166,13 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                         advance = glyph.advance,
                         renderAssetKey = certification.assetKeys[placement.visualOrder],
                         materializationCertificate = certification.certificates[GlyphPosition(placement.visualOrder, glyphIndex)],
+                        provenance = glyph.provenance,
                     )
                 },
             )
         }
         val candidates = candidates(request, placements)
+        val inlineObjects = placements.flatMap(RunPlacement::objects)
         return EditableLineResult.Success(
             EditableLine(
                 range = request.unicodeAnalysis.range,
@@ -166,42 +180,34 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                 verticalMetrics = request.verticalMetrics,
                 positionedGlyphRuns = positionedRuns,
                 caretCandidates = candidates,
+                inlineObjects = inlineObjects,
                 diagnostics = diagnostics,
             ),
         )
     }
 
-    private fun positionRuns(request: EditableLineRequest): List<RunPlacement> {
+    private fun positionRuns(
+        request: EditableLineRequest,
+        refinedRuns: List<RefinedRun>,
+    ): List<RunPlacement> {
         val visualRuns = visualRuns(request)
+        val refinedBySource = refinedRuns.associateBy { run -> run.sourceRun }
+        val ordered = visualRuns.map { run -> refinedBySource.getValue(run) }
         var pen = 0.0
-        return visualRuns.mapIndexed { visualOrder, sourceRun ->
+        return ordered.mapIndexed { visualOrder, refined ->
             val initialPen = finiteUnit(pen, "run initial pen")
-            val glyphs = sourceRun.glyphs.map { glyph ->
-                val penStart = finiteUnit(pen, "glyph pen")
-                val origin = LayoutPoint(
-                    x = finiteUnit(pen + glyph.xOffset.value.toDouble(), "glyph horizontal origin"),
-                    y = glyph.yOffset,
-                )
-                val advance = LayoutVector(glyph.xAdvance, glyph.yAdvance)
-                pen += glyph.xAdvance.value.toDouble()
-                val penEnd = finiteUnit(pen, "glyph end pen")
-                GlyphPlacement(
-                    shapedGlyph = glyph,
-                    sourceClusters = glyph.clusterTokens.map(sourceRun::clusterFor),
-                    origin = origin,
-                    advance = advance,
-                    penStart = penStart,
-                    penEnd = penEnd,
-                )
-            }
+            val objects = mutableListOf<PositionedInlineObject>()
+            val glyphs = expandAndPositionRun(request, refined, pen, objects)
+            pen = glyphs.lastOrNull()?.penEnd?.value?.toDouble() ?: pen
             val finalPen = finiteUnit(pen, "run final pen")
             RunPlacement(
-                sourceRun = sourceRun,
+                sourceRun = refined.sourceRun,
                 visualOrder = visualOrder,
                 glyphs = glyphs,
                 xStart = initialPen,
                 xEnd = finalPen,
-                caretPositions = endpointCarets(sourceRun, initialPen, finalPen),
+                caretPositions = endpointCarets(refined.sourceRun, initialPen, finalPen),
+                objects = objects,
             )
         }
     }
@@ -218,6 +224,319 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
         return ordered
     }
 
+    /**
+     * Applies derived-content policies before positioning through [LineContentPlan],
+     * which covers soft and automatic hyphenation, tab neutralization, kashida,
+     * and justification spacing.
+     */
+    private fun refineGlyphs(
+        request: EditableLineRequest,
+        diagnostics: MutableList<EditableLineDiagnostic>,
+    ): List<RefinedRun> {
+        val snapshot = request.snapshot
+        return if (snapshot == null) {
+            request.shapedGlyphRuns.map { run ->
+                RefinedRun(
+                    run,
+                    run.glyphs.map { glyph ->
+                        RefinedGlyph(glyph, GlyphProvenance.Direct(legacyMappedRange(run, glyph)))
+                    },
+                )
+            }
+        } else {
+            LineContentPlan.build(request, snapshot, diagnostics)
+        }
+    }
+
+    /**
+     * Positions one run glyph stream, expanding tab stops and their leaders.
+     *
+     * Tab scalars were neutralized to zero advance by [LineContentPlan]; this
+     * walk reintroduces the geometric jump to the next explicit or implicit
+     * stop, inserts synthetic leader glyphs, and applies the field alignment
+     * shift for START, END, CENTER, and DECIMAL stops. Fields are computed
+     * within the run: cross-run fields are conservatively left
+     * start-aligned with zero shift, which the caller documents as the
+     * supported coverage.
+     */
+    private fun expandAndPositionRun(
+        request: EditableLineRequest,
+        refined: RefinedRun,
+        runStartPen: Double,
+        collectedObjects: MutableList<PositionedInlineObject>,
+    ): List<GlyphPlacement> {
+        val positioning = request.positioning
+        val entries = refined.glyphs
+        val needsTabWalk = request.snapshot != null && entries.any { isTabGlyph(request, refined, it) }
+        if (!needsTabWalk && entries.none { it.inlineObjectWidth != null }) {
+            return positionEntries(request, refined, entries, runStartPen, collectedObjects)
+        }
+        val out = mutableListOf<GlyphPlacement>()
+        var pen = runStartPen
+        var index = 0
+        var tabSeen = 0
+        while (index < entries.size) {
+            val entry = entries[index]
+            if (entry.inlineObjectWidth != null) {
+                val objectRange = entry.shapedGlyph.clusterTokens.map(refined.sourceRun::clusterFor)
+                    .let { clusters -> TextRange(clusters.first().sourceRange.start, clusters.last().sourceRange.endExclusive) }
+                out += objectPlacement(request, refined, entry, objectRange, pen, collectedObjects)
+                pen += entry.inlineObjectWidth.value.toDouble()
+                index += 1
+                continue
+            }
+            if (isTabGlyph(request, refined, entry)) {
+                val fieldAfter = mutableListOf<RefinedGlyph>()
+                var cursor = index + 1
+                while (cursor < entries.size && !isTabGlyph(request, refined, entries[cursor])) {
+                    fieldAfter += entries[cursor]
+                    cursor += 1
+                }
+                val stops = positioning?.tabStops.orEmpty()
+                val fieldIndex = tabSeen
+                tabSeen += 1
+                val penAtTab = pen
+                val stop = resolveStop(stops, positioning?.defaultTabInterval ?: DEFAULT_TAB_INTERVAL, penAtTab, fieldIndex)
+                val leader = stop.leader.takeIf { _ -> positioning != null }
+                val leaders = buildList {
+                    if (leader != null && penAtTab < stop.position.value) {
+                        val instance = request.fontInstances.firstOrNull { it.key == refined.sourceRun.fontInstanceKey }
+                        if (instance != null) {
+                            val leaderGlyph = (instance.resolveGlyph(leader) as? FontOperationResult.Success)?.value
+                            val leaderAdvance = leaderGlyph?.let { glyph ->
+                                (instance.metrics(glyph.glyphId) as? FontOperationResult.Success)?.value?.advanceWidth
+                            }
+                            if (leaderGlyph != null && leaderAdvance != null && leaderAdvance.value > 0f) {
+                                val count = ((stop.position.value - penAtTab) / leaderAdvance.value).toInt()
+                                repeat(count) {
+                                    add(
+                                        RefinedGlyph(
+                                            shapedGlyph = ShapedGlyph(
+                                                glyphId = leaderGlyph.glyphId,
+                                                xAdvance = leaderAdvance,
+                                                yAdvance = LayoutUnit(0f),
+                                                xOffset = LayoutUnit(0f),
+                                                yOffset = LayoutUnit(0f),
+                                                safetyFlags = entry.shapedGlyph.safetyFlags,
+                                                clusterTokens = listOf(entry.shapedGlyph.clusterTokens.first()),
+                                            ),
+                                            provenance = GlyphProvenance.Synthetic(
+                                                refined.sourceRun.clusterFor(entry.shapedGlyph.clusterTokens.first()).sourceRange.start,
+                                                GlyphProvenanceRole.TAB_LEADER,
+                                            ),
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                var penAtField = penAtTab
+                leaders.forEach { leaderEntry ->
+                    out += GlyphPlacement(
+                        shapedGlyph = leaderEntry.shapedGlyph,
+                        sourceClusters = leaderEntry.shapedGlyph.clusterTokens.map(refined.sourceRun::clusterFor),
+                        origin = LayoutPoint(finiteUnit(penAtField + leaderEntry.shapedGlyph.xOffset.value.toDouble(), "leader origin"), leaderEntry.shapedGlyph.yOffset),
+                        advance = LayoutVector(leaderEntry.shapedGlyph.xAdvance, leaderEntry.shapedGlyph.yAdvance),
+                        penStart = finiteUnit(penAtField, "leader pen start"),
+                        penEnd = finiteUnit(penAtField + leaderEntry.shapedGlyph.xAdvance.value.toDouble(), "leader pen end"),
+                        provenance = leaderEntry.provenance,
+                    )
+                    penAtField += leaderEntry.shapedGlyph.xAdvance.value.toDouble()
+                }
+                val jumpEnd = max(penAtField, stop.position.value.toDouble())
+                val tabAdvance = jumpEnd - penAtField
+                val jumpShaped = ShapedGlyph(
+                    glyphId = entry.shapedGlyph.glyphId,
+                    xAdvance = finiteUnit(tabAdvance, "tab advance"),
+                    yAdvance = LayoutUnit(0f),
+                    xOffset = LayoutUnit(0f),
+                    yOffset = LayoutUnit(0f),
+                    safetyFlags = entry.shapedGlyph.safetyFlags,
+                    clusterTokens = entry.shapedGlyph.clusterTokens,
+                )
+                val tabPlacement = GlyphPlacement(
+                    shapedGlyph = jumpShaped,
+                    sourceClusters = jumpShaped.clusterTokens.map(refined.sourceRun::clusterFor),
+                    origin = LayoutPoint(finiteUnit(penAtTab + jumpShaped.xOffset.value.toDouble(), "tab origin"), jumpShaped.yOffset),
+                    advance = LayoutVector(jumpShaped.xAdvance, jumpShaped.yAdvance),
+                    penStart = finiteUnit(penAtTab, "tab pen start"),
+                    penEnd = finiteUnit(penAtField + tabAdvance, "tab pen end"),
+                    provenance = entry.provenance,
+                )
+                out += tabPlacement
+                val fieldStartPen = penAtField + tabAdvance
+                val naturalField = fieldAfter.sumOf { it.shapedGlyph.xAdvance.value.toDouble() }
+                val available = max(0.0, stop.position.value - penAtTab)
+                val shift = fieldShift(request, refined, stop, fieldAfter, naturalField, available)
+                pen = fieldStartPen
+                fieldAfter.forEach { fieldEntry ->
+                    pen += fieldEntry.shapedGlyph.xAdvance.value.toDouble()
+                    out += GlyphPlacement(
+                        shapedGlyph = fieldEntry.shapedGlyph,
+                        sourceClusters = fieldEntry.shapedGlyph.clusterTokens.map(refined.sourceRun::clusterFor),
+                        origin = LayoutPoint(
+                            finiteUnit((pen - fieldEntry.shapedGlyph.xAdvance.value.toDouble()) + shift + fieldEntry.shapedGlyph.xOffset.value.toDouble(), "field origin"),
+                            fieldEntry.shapedGlyph.yOffset,
+                        ),
+                        advance = LayoutVector(fieldEntry.shapedGlyph.xAdvance, fieldEntry.shapedGlyph.yAdvance),
+                        penStart = finiteUnit(pen - fieldEntry.shapedGlyph.xAdvance.value.toDouble(), "field pen start"),
+                        penEnd = finiteUnit(pen, "field pen end"),
+                        provenance = fieldEntry.provenance,
+                    )
+                }
+                index = cursor
+            } else {
+                out += positionOne(request, refined, entry, pen)
+                pen += entry.shapedGlyph.xAdvance.value.toDouble()
+                index += 1
+            }
+        }
+        return out
+    }
+
+    /**
+     * Places one inline object marker: the glyph advances are zero and the
+     * object consumes its definition width in the pen walk. Object rectangles
+     * are line-local with the baseline at `(0, 0)`, exactly like glyph
+     * origins.
+     */
+    private fun objectPlacement(
+        request: EditableLineRequest,
+        refined: RefinedRun,
+        entry: RefinedGlyph,
+        objectRange: TextRange,
+        pen: Double,
+        collectedObjects: MutableList<PositionedInlineObject>,
+    ): GlyphPlacement {
+        val width = entry.inlineObjectWidth ?: LayoutUnit(0f)
+        val insertion = GlyphPlacement(
+            shapedGlyph = entry.shapedGlyph,
+            sourceClusters = entry.shapedGlyph.clusterTokens.map(refined.sourceRun::clusterFor),
+            origin = LayoutPoint(finiteUnit(pen, "object origin"), LayoutUnit(0f)),
+            advance = LayoutVector(width, LayoutUnit(0f)),
+            penStart = finiteUnit(pen, "object pen"),
+            penEnd = finiteUnit(pen + width.value.toDouble(), "object pen end"),
+            provenance = entry.provenance,
+        )
+        val definition = request.inlineObjects?.definition(objectRange.start) ?: return insertion
+        val lineTop = -request.verticalMetrics.ascent.value.toDouble()
+        val lineBottom = request.verticalMetrics.descent.value.toDouble()
+        val lineCenter = (lineTop + lineBottom) / 2.0
+        val objectTop = when (definition.alignment) {
+            org.graphiks.kalligraphie.api.InlineObjectAlignment.TOP -> lineTop
+            org.graphiks.kalligraphie.api.InlineObjectAlignment.BASELINE -> -(definition.baselineOffset.value.toDouble())
+            org.graphiks.kalligraphie.api.InlineObjectAlignment.BOTTOM -> lineBottom - definition.height.value.toDouble()
+            org.graphiks.kalligraphie.api.InlineObjectAlignment.CENTER -> lineCenter - definition.height.value.toDouble() / 2.0
+        }
+        collectedObjects.add(
+            PositionedInlineObject(
+                sourceRange = objectRange,
+                definition = definition,
+                rect = LayoutRect(
+                    left = finiteUnit(pen, "object left"),
+                    top = finiteUnit(objectTop, "object top"),
+                    right = finiteUnit(pen + width.value.toDouble(), "object right"),
+                    bottom = finiteUnit(objectTop + definition.height.value.toDouble(), "object bottom"),
+                ),
+            ),
+        )
+        return insertion
+    }
+
+    private fun positionOne(
+        request: EditableLineRequest,
+        refined: RefinedRun,
+        entry: RefinedGlyph,
+        pen: Double,
+    ): GlyphPlacement {
+        val shaped = entry.shapedGlyph
+        return GlyphPlacement(
+            shapedGlyph = shaped,
+            sourceClusters = shaped.clusterTokens.map(refined.sourceRun::clusterFor),
+            origin = LayoutPoint(
+                finiteUnit(pen + shaped.xOffset.value.toDouble(), "glyph horizontal origin"),
+                shaped.yOffset,
+            ),
+            advance = LayoutVector(shaped.xAdvance, shaped.yAdvance),
+            penStart = finiteUnit(pen, "glyph pen"),
+            penEnd = finiteUnit(pen + shaped.xAdvance.value.toDouble(), "glyph end pen"),
+            provenance = entry.provenance,
+        )
+    }
+
+    private fun positionEntries(
+        request: EditableLineRequest,
+        refined: RefinedRun,
+        entries: List<RefinedGlyph>,
+        runStartPen: Double,
+        collectedObjects: MutableList<PositionedInlineObject>,
+    ): List<GlyphPlacement> {
+        var pen = runStartPen
+        val out = mutableListOf<GlyphPlacement>()
+        entries.forEach { entry ->
+            if (entry.inlineObjectWidth != null) {
+                val objectRange = entry.shapedGlyph.clusterTokens.map(refined.sourceRun::clusterFor)
+                    .let { clusters -> TextRange(clusters.first().sourceRange.start, clusters.last().sourceRange.endExclusive) }
+                out += objectPlacement(request, refined, entry, objectRange, pen, collectedObjects)
+                pen += entry.inlineObjectWidth.value.toDouble()
+            } else {
+                out += positionOne(request, refined, entry, pen)
+                pen += entry.shapedGlyph.xAdvance.value.toDouble()
+            }
+        }
+        return out
+    }
+
+    private fun resolveStop(
+        stops: List<org.graphiks.kalligraphie.api.TabStop>,
+        defaultInterval: LayoutUnit,
+        penAtTab: Double,
+        fieldIndex: Int,
+    ): org.graphiks.kalligraphie.api.TabStop {
+        val explicit = stops.firstOrNull { stop -> stop.position.value > penAtTab + EPSILON_LAYOUT }
+        if (explicit != null) return explicit
+        val step = defaultInterval.value.toDouble()
+        val multiple = ceil((penAtTab + EPSILON_LAYOUT) / step).toInt()
+        return org.graphiks.kalligraphie.api.TabStop(
+            position = LayoutUnit((max(multiple, fieldIndex + 1) * step).toFloat()),
+            alignment = org.graphiks.kalligraphie.api.TabAlignment.START,
+        )
+    }
+
+    private fun fieldShift(
+        request: EditableLineRequest,
+        refined: RefinedRun,
+        stop: org.graphiks.kalligraphie.api.TabStop,
+        field: List<RefinedGlyph>,
+        naturalField: Double,
+        available: Double,
+    ): Double {
+        if (field.isEmpty() || available <= 0.0 || naturalField > available) return 0.0
+        return when (stop.alignment) {
+            org.graphiks.kalligraphie.api.TabAlignment.START -> 0.0
+            org.graphiks.kalligraphie.api.TabAlignment.END -> available - naturalField
+            org.graphiks.kalligraphie.api.TabAlignment.CENTER -> (available - naturalField) / 2.0
+            org.graphiks.kalligraphie.api.TabAlignment.DECIMAL -> {
+                val snapshot = request.snapshot
+                val decimalIndex = field.indexOfFirst { entry ->
+                    val scalars = snapshot?.let { snap ->
+                        entry.shapedGlyph.clusterTokens
+                            .map(refined.sourceRun::clusterFor)
+                            .flatMap { cluster -> snap.scalarValues(cluster.sourceRange) }
+                    }.orEmpty()
+                    scalars.contains(stop.alignmentCharacter)
+                }
+                if (decimalIndex < 0 || decimalIndex >= field.size) {
+                    available - naturalField
+                } else {
+                    val before = field.take(decimalIndex).sumOf { entry -> entry.shapedGlyph.xAdvance.value.toDouble() }
+                    val center = before + field[decimalIndex].shapedGlyph.xAdvance.value.toDouble() / 2.0
+                    -center
+                }
+            }
+        }
+    }
     private fun endpointCarets(
         run: ShapedGlyphRun,
         xStart: LayoutUnit,
@@ -570,6 +889,7 @@ private class RunPlacement(
     val xStart: LayoutUnit,
     val xEnd: LayoutUnit,
     val caretPositions: MutableMap<TextIndex, CaretLocation>,
+    val objects: List<PositionedInlineObject> = emptyList(),
 )
 
 private data class GlyphPlacement(
@@ -579,6 +899,23 @@ private data class GlyphPlacement(
     val advance: LayoutVector,
     val penStart: LayoutUnit,
     val penEnd: LayoutUnit,
+    val provenance: GlyphProvenance,
+)
+
+/** One refined final glyph with the provenance attributed by its transform. */
+internal data class RefinedGlyph(
+    val shapedGlyph: ShapedGlyph,
+    val provenance: GlyphProvenance,
+    /** True when this entry represents a tab-stop jump rather than printable content. */
+    val tabMarker: Boolean = false,
+    /** Width consumed by an inline object marker, or `null` when this is a glyph entry. */
+    val inlineObjectWidth: LayoutUnit? = null,
+)
+
+/** A shaped run whose glyph stream was refined by derived-content policies. */
+internal data class RefinedRun(
+    val sourceRun: ShapedGlyphRun,
+    val glyphs: List<RefinedGlyph>,
 )
 
 private data class CaretLocation(
@@ -605,9 +942,25 @@ private fun finiteUnit(value: Double, label: String): LayoutUnit {
     return LayoutUnit(narrowed)
 }
 
-private fun ShapedGlyphRun.clusterFor(token: org.graphiks.kalligraphie.api.ShaperClusterToken): ShaperCluster =
-    clusters.firstOrNull { it.token == token }
-        ?: throw IllegalArgumentException("A shaped glyph referenced an undeclared cluster token.")
+private fun isTabGlyph(
+    request: EditableLineRequest,
+    refined: RefinedRun,
+    entry: RefinedGlyph,
+): Boolean {
+    val snapshot = request.snapshot ?: return false
+    return entry.shapedGlyph.clusterTokens
+        .map(refined.sourceRun::clusterFor)
+        .any { cluster -> snapshot.scalarValues(cluster.sourceRange).any { it == TAB_SCALAR } }
+}
+
+private fun legacyMappedRange(run: ShapedGlyphRun, glyph: ShapedGlyph): TextRange {
+    val mapped = glyph.clusterTokens.map(run::clusterFor)
+    return TextRange(mapped.first().sourceRange.start, mapped.last().sourceRange.endExclusive)
+}
+
+private const val TAB_SCALAR: Int = 0x0009
+internal val DEFAULT_TAB_INTERVAL: LayoutUnit = LayoutUnit(1000f / 8f)
+private const val EPSILON_LAYOUT: Double = 1e-6
 
 private fun containedBy(owner: TextRange, item: TextRange): Boolean =
     item.start.sharesVersionWith(owner.start) && item.start >= owner.start && item.endExclusive <= owner.endExclusive

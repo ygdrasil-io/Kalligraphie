@@ -648,7 +648,7 @@ internal object FontFallbackResolver {
     private fun Int.isVariationSelector(): Boolean = this in 0xFE00..0xFE0F || this in 0xE0100..0xE01EF
 
     private fun FallbackUnit.isGlyphless(snapshot: TextSnapshot): Boolean =
-        snapshot.scalarValues(range).all { scalar -> scalar in MANDATORY_LINE_CONTROLS }
+        snapshot.scalarValues(range).all { scalar -> scalar in MANDATORY_LINE_CONTROLS || scalar == TAB_SCALAR || scalar == OBJECT_REPLACEMENT }
 
     private fun String.isExplicitScript(): Boolean = this != COMMON_SCRIPT && this != INHERITED_SCRIPT
 
@@ -656,4 +656,7 @@ internal object FontFallbackResolver {
     private const val INHERITED_SCRIPT: String = "Zinh"
 
     private val MANDATORY_LINE_CONTROLS: Set<Int> = setOf(0x000A, 0x000B, 0x000C, 0x000D, 0x0085, 0x2028, 0x2029)
+
+    private const val TAB_SCALAR: Int = 0x0009
+    private const val OBJECT_REPLACEMENT: Int = 0xFFFC
 }

@@ -16,7 +16,11 @@ import org.graphiks.kalligraphie.api.LayoutUnit
 import org.graphiks.kalligraphie.api.LineBreakKind
 import org.graphiks.kalligraphie.api.LineOverscan
 import org.graphiks.kalligraphie.api.OverflowPolicy
+import org.graphiks.kalligraphie.api.HyphenationMode
+import org.graphiks.kalligraphie.api.HyphenationService
+import org.graphiks.kalligraphie.api.InlineObjectSnapshot
 import org.graphiks.kalligraphie.api.ParagraphLayoutResult
+import org.graphiks.kalligraphie.api.ParagraphPositioningPolicy
 import org.graphiks.kalligraphie.api.ParagraphMaterializationIdentity
 import org.graphiks.kalligraphie.api.ShapingBackend
 import org.graphiks.kalligraphie.api.TextIndex
@@ -55,7 +59,15 @@ public class JvmIncrementalParagraphLayoutRequest(
     /** Layout-only or synchronously outline-certified materialization borrowed for this call. */
     public val materialization: EditableLineMaterialization = EditableLineMaterialization.LayoutOnly,
     /** Complete-line overflow behavior forwarded to the JVM paragraph composer. */
-    public val overflowPolicy: OverflowPolicy = OverflowPolicy.CONTINUE,
+    public val overflowPolicy: OverflowPolicy = OverflowPolicy.Continue,
+    /** Tab stops, alignment, and justification applied to every computed line. */
+    public val positioning: ParagraphPositioningPolicy = ParagraphPositioningPolicy(),
+    /** Hyphenation mode forwarded to line selection and final line content. */
+    public val hyphenationMode: HyphenationMode = HyphenationMode.MANUAL,
+    /** Immutable versioned service used by [HyphenationMode.AUTO], or `null` when absent. */
+    public val hyphenationService: HyphenationService? = null,
+    /** Definitions bound to `U+FFFC` object replacement scalars inside the window. */
+    public val inlineObjects: InlineObjectSnapshot? = null,
 ) {
     init {
         require(language.isNotBlank()) { "Incremental paragraph language must not be blank." }
@@ -278,6 +290,10 @@ public class JvmIncrementalParagraphLayoutSession private constructor(
                     features = request.input.typography.features,
                     materialization = sessionRequest.materialization,
                     overflowPolicy = sessionRequest.overflowPolicy,
+                    positioning = sessionRequest.positioning,
+                    hyphenationMode = sessionRequest.hyphenationMode,
+                    hyphenationService = sessionRequest.hyphenationService,
+                    inlineObjects = sessionRequest.inlineObjects,
                     continuation = continuation,
                     cancellationToken = request.cancellationToken,
                 ),
