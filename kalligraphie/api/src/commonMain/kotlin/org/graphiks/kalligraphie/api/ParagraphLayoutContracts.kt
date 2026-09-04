@@ -49,7 +49,12 @@ public enum class EllipsisSide {
 
 /** Policy applied when complete source coverage does not fit in the supplied region. */
 public sealed interface OverflowPolicy {
-    /** Publish complete lines only and return an exact immutable continuation for the remainder. */
+    /**
+     * Publish complete lines only and return an exact immutable continuation
+     * for the remainder when the region is exhausted. Truncation is never
+     * applied in this mode: the published prefix plus the returned
+     * [LayoutContinuation] partitions the complete requested source range.
+     */
     public data object Continue : OverflowPolicy
 
     /**
