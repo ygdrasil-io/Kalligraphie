@@ -123,11 +123,6 @@ class ParagraphLayoutContractsTest {
     }
 
     @Test
-    fun continueIsTheOnlyOverflowPolicyUntilAnotherPolicyHasEndToEndSemantics() {
-        assertEquals(listOf(OverflowPolicy.CONTINUE), enumValues<OverflowPolicy>().toList())
-    }
-
-    @Test
     fun resumedRequestRejectsAContinuationFromAnotherVersionOrGeometryConfiguration() {
         val fixture = fixture("a")
         val initial = fixture.request()

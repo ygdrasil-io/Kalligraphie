@@ -1,0 +1,12 @@
+# License for hyph-en-us.pat.txt
+
+The vendored `hyph-en-us.pat.txt` file is the American English hyphenation
+pattern set distributed by the `hyph-utf8` project (patterns on
+<http://www.hyphenation.org/tex>), authored by Gerard D. C. Kuiken and
+copyright (C) 1990, 2004, 2005.
+
+The file's own license notice is reproduced verbatim:
+
+> Copying and distribution of this file, with or without modification,
+> are permitted in any medium without royalty provided the copyright
+> notice and this notice are preserved.

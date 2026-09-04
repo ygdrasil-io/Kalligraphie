@@ -229,6 +229,20 @@ public class TextSnapshot(
         }
     }
 
+    /**
+     * Returns the Unicode scalar value immediately preceding [boundary], or `null` at the
+     * snapshot start.
+     *
+     * The returned scalar is the last Unicode scalar value of the snapshot in logical order
+     * before the requested boundary. This convenience never exposes scalar ordinals and is
+     * useful for policies that must inspect the character before a line break, such as soft
+     * hyphen handling.
+     */
+    public fun scalarPreceding(boundary: TextIndex): Int? {
+        require(boundary.belongsTo(this)) { "Text index must belong to the snapshot version." }
+        return scalars.getOrNull(boundary.ordinal - 1)
+    }
+
     /** Returns the source range consumed by the scalar beginning at [index]. */
     public fun sourceRange(index: TextIndex): SourceRange {
         require(index.belongsTo(this)) { "Text index must belong to the snapshot version." }

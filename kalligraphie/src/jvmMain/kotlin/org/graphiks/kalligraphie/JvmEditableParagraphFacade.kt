@@ -14,6 +14,10 @@ import org.graphiks.kalligraphie.api.FontInstanceDescriptor
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontResolutionPolicySnapshot
 import org.graphiks.kalligraphie.api.HorizontalParagraphConstraints
+import org.graphiks.kalligraphie.api.InlineObjectSnapshot
+import org.graphiks.kalligraphie.api.HyphenationMode
+import org.graphiks.kalligraphie.api.HyphenationService
+import org.graphiks.kalligraphie.api.ParagraphPositioningPolicy
 import org.graphiks.kalligraphie.api.LayoutContinuation
 import org.graphiks.kalligraphie.api.OpenTypeFeature
 import org.graphiks.kalligraphie.api.OverflowPolicy
@@ -66,8 +70,14 @@ public class JvmEditableParagraphFacadeRequest(
     features: List<OpenTypeFeature> = emptyList(),
     /** Layout-only or synchronously outline-certified publication mode. */
     public val materialization: EditableLineMaterialization = EditableLineMaterialization.LayoutOnly,
-    /** Complete-line overflow behavior; only [OverflowPolicy.CONTINUE] is available. */
-    public val overflowPolicy: OverflowPolicy = OverflowPolicy.CONTINUE,
+    /** Complete-line overflow behavior; ellipsis truncation when [OverflowPolicy.Ellipsis] is selected. */
+    public val overflowPolicy: OverflowPolicy = OverflowPolicy.Continue,    /** Tab stops, alignment, and justification applied to the paragraph lines. */
+    public val positioning: ParagraphPositioningPolicy = ParagraphPositioningPolicy(),
+    /** Hyphenation mode applied by line selection and final line content. */
+    public val hyphenationMode: HyphenationMode = HyphenationMode.MANUAL,
+    /** Immutable versioned service used by [HyphenationMode.AUTO], or `null` when absent. */
+    public val hyphenationService: HyphenationService? = null,    /** Definitions bound to `U+FFFC` object replacement scalars inside the requested range. */
+    public val inlineObjects: InlineObjectSnapshot? = null,
     /** Immutable replay capability returned by a preceding partial call. */
     public val continuation: LayoutContinuation? = null,
     /** Cooperative signal checked before and during bounded composition work. */
@@ -206,7 +216,10 @@ public object JvmEditableParagraphFacade {
             fontInstanceDescriptor = request.fontInstanceDescriptor,
             shapingBackend = backend,
             materializationIdentity = ParagraphMaterializationIdentity.from(request.materialization),
-            overflowPolicy = request.overflowPolicy,
+            overflowPolicy = request.overflowPolicy,            positioning = request.positioning,
+            hyphenationMode = request.hyphenationMode,
+            hyphenationService = request.hyphenationService,
+            inlineObjects = request.inlineObjects,
             continuation = request.continuation,
             cancellationToken = request.cancellationToken,
         )

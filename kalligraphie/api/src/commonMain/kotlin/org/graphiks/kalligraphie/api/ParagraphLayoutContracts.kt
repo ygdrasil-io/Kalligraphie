@@ -35,10 +35,47 @@ public class HorizontalParagraphConstraints(
     override fun toString(): String = "HorizontalParagraphConstraints(region=$region, lineMetrics=$lineMetrics)"
 }
 
+/** Side of the inline axis at which an ellipsis truncation is anchored. */
+public enum class EllipsisSide {
+    /** Anchor at the logical inline start of the truncated line. */
+    INLINE_START,
+
+    /** Anchor between two visible sequences, hiding the middle of the line. */
+    MIDDLE,
+
+    /** Anchor at the logical inline end of the truncated line. */
+    INLINE_END,
+}
+
 /** Policy applied when complete source coverage does not fit in the supplied region. */
-public enum class OverflowPolicy {
-    /** Publish complete lines only and return an exact immutable continuation for the remainder. */
-    CONTINUE,
+public sealed interface OverflowPolicy {
+    /**
+     * Publish complete lines only and return an exact immutable continuation
+     * for the remainder when the region is exhausted. Truncation is never
+     * applied in this mode: the published prefix plus the returned
+     * [LayoutContinuation] partitions the complete requested source range.
+     */
+    public data object Continue : OverflowPolicy
+
+    /**
+     * Publish a truncated line whose hidden content keeps an explicit
+     * relationship with its source range, plus a synthetic ellipsis marker.
+     *
+     * The marker is synthetic content anchored at a real snapshot boundary and
+     * never creates a document position. Hidden scalars keep their real
+     * bounds, caret positions, and cluster relations: visibility is a final
+     * glyph property, not a text property.
+     */
+    public class Ellipsis(
+        /** Side of the logical inline axis at which truncation is anchored. */
+        public val side: EllipsisSide,
+        /** Unicode scalar value of the ellipsis marker, normalized to `U+2026`. */
+        public val marker: Int = 0x2026,
+    ) : OverflowPolicy {
+        init {
+            require(marker == 0x2026) { "Ellipsis markers must use the Unicode horizontal ellipsis scalar." }
+        }
+    }
 }
 
 /**
@@ -107,6 +144,11 @@ public class LineLayout(
 
     /** Immutable recoverable diagnostics produced while finalizing the line. */
     public val diagnostics: List<EditableLineDiagnostic> = line.diagnostics.immutableListSnapshot()
+
+    /** Final positioned inline objects with every rectangle in paragraph coordinates. */
+    public val positionedInlineObjects: List<PositionedInlineObject> = line.positionedInlineObjects
+        .map { objectItem -> objectItem.translatedBy(baseline) }
+        .immutableListSnapshot()
 
     init {
         require(lineBox.left < lineBox.right && lineBox.top < lineBox.bottom) {
@@ -236,7 +278,16 @@ public abstract class ParagraphLayout protected constructor(
                 val left = coordinates.minOrNull() ?: return@mapNotNull null
                 val right = coordinates.maxOrNull() ?: return@mapNotNull null
                 if (left == right) null else LayoutRect(left, line.lineBox.top, right, line.lineBox.bottom)
-            }
+            } + line.positionedInlineObjects.mapNotNull { objectItem ->
+            val objectRange = objectItem.sourceRange
+            if (selectedStart >= objectRange.endExclusive || selectedEnd <= objectRange.start) return@mapNotNull null
+            LayoutRect(
+                left = if (objectItem.rect.left > line.lineBox.left) objectItem.rect.left else line.lineBox.left,
+                top = if (objectItem.rect.top > line.lineBox.top) objectItem.rect.top else line.lineBox.top,
+                right = if (objectItem.rect.right < line.lineBox.right) objectItem.rect.right else line.lineBox.right,
+                bottom = if (objectItem.rect.bottom < line.lineBox.bottom) objectItem.rect.bottom else line.lineBox.bottom,
+            )
+        }.filter { rectangle -> rectangle.left < rectangle.right && rectangle.top < rectangle.bottom }
         }.immutableListSnapshot()
     }
 
@@ -277,6 +328,9 @@ public enum class CoverageStatus {
 
     /** Only a complete prefix is published and a compatible continuation owns the remainder. */
     PARTIAL,
+
+    /** A truncated line was published: hidden content is described by the result truncation. */
+    TRUNCATED,
 }
 
 /**
@@ -486,9 +540,16 @@ public class ParagraphLayoutRequest(
     /** Resource-free identity of layout-only or outline-validated publication. */
     public val materializationIdentity: ParagraphMaterializationIdentity,
     /** Only supported behavior when complete source coverage exceeds the region. */
-    public val overflowPolicy: OverflowPolicy = OverflowPolicy.CONTINUE,
+    public val overflowPolicy: OverflowPolicy = OverflowPolicy.Continue,
     /** Exact prior result capability when this request resumes partial coverage. */
     public val continuation: LayoutContinuation? = null,
+    /** Explicit tab stops, alignment, and justification applied to every composed line. */
+    public val positioning: ParagraphPositioningPolicy = ParagraphPositioningPolicy(),
+    /** Hyphenation mode applied to line selection and final line content. */
+    public val hyphenationMode: HyphenationMode = HyphenationMode.MANUAL,
+    /** Immutable versioned service used by [HyphenationMode.AUTO], or `null` when absent. */
+    public val hyphenationService: HyphenationService? = null,    /** Definitions bound to `U+FFFC` object replacement scalars inside the requested range. */
+    public val inlineObjects: InlineObjectSnapshot? = null,
     /** Cooperative signal observed between bounded composition operations. */
     public val cancellationToken: CancellationToken = CancellationToken.none,
 ) {
@@ -573,8 +634,13 @@ public sealed interface ParagraphLayoutResult {
         public val coverageStatus: CoverageStatus,
         /** Exact remainder capability for partial coverage, otherwise `null`. */
         public val continuation: LayoutContinuation? = null,
+        /** Explicit hidden source content when [coverageStatus] is [CoverageStatus.TRUNCATED]. */
+        public val truncation: ParagraphTruncation? = null,
     ) : ParagraphLayoutResult {
         init {
+            require((coverageStatus == CoverageStatus.TRUNCATED) == (truncation != null)) {
+                "Truncated paragraph coverage must publish an explicit hidden-range description."
+            }
             require((coverageStatus == CoverageStatus.PARTIAL) == (continuation != null)) {
                 "Only partial paragraph coverage may publish a continuation."
             }
@@ -614,6 +680,31 @@ public sealed interface ParagraphLayoutResult {
     }
 }
 
+/**
+ * Explicit relationship between a truncated paragraph line and its hidden source content.
+ *
+ * [hiddenRange] is the exact source range removed from visibility, [anchor] is
+ * the real snapshot boundary at which the synthetic ellipsis marker was
+ * anchored, and [side] records where the marker was placed in the logical
+ * inline axis. Truncation never creates a [TextIndex], caret candidate, or
+ * editable position: reading, copying, and hit testing still consult the
+ * complete [TextSnapshot].
+ */
+public class ParagraphTruncation(
+    /** Exact source range hidden by this truncation. */
+    public val hiddenRange: TextRange,
+    /** Real snapshot boundary anchoring the synthetic ellipsis marker. */
+    public val anchor: TextIndex,
+    /** Logical inline side at which the marker was placed. */
+    public val side: EllipsisSide,
+) {
+    init {
+        require(hiddenRange.start.sharesVersionWith(anchor)) {
+            "Truncation hidden range and anchor must use the same text revision."
+        }
+    }
+}
+
 /** Portable boundary implemented by a pure, renderer-independent paragraph layout module. */
 public interface ParagraphLayouter {
     /**
@@ -645,9 +736,21 @@ private fun PositionedGlyphRun.translatedBy(baseline: LayoutPoint): PositionedGl
                 advance = glyph.advance,
                 renderAssetKey = glyph.renderAssetKey,
                 materializationCertificate = glyph.materializationCertificate,
+                provenance = glyph.provenance,
             )
         },
     )
+
+private fun PositionedInlineObject.translatedBy(baseline: LayoutPoint): PositionedInlineObject = PositionedInlineObject(
+    sourceRange = sourceRange,
+    definition = definition,
+    rect = LayoutRect(
+        left = LayoutUnit(rect.left.value + baseline.x.value),
+        top = LayoutUnit(rect.top.value + baseline.y.value),
+        right = LayoutUnit(rect.right.value + baseline.x.value),
+        bottom = LayoutUnit(rect.bottom.value + baseline.y.value),
+    ),
+)
 
 private fun CaretCandidate.translatedBy(baseline: LayoutPoint): CaretCandidate =
     CaretCandidate(

@@ -52,6 +52,7 @@ nav:
   - Font Management: font-management.md
   - Editable Paragraphs: editable-paragraphs.md
   - Incremental Layout Measurement: incremental-layout-measurement.md
+  - Advanced Typography: advanced-typography.md
 
 # !!! EMBEDDED DOKKA START, DO NOT COMMIT !!! #
 # !!! EMBEDDED DOKKA END, DO NOT COMMIT !!! #

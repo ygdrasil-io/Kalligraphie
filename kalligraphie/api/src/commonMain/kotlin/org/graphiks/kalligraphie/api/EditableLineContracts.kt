@@ -218,7 +218,7 @@ public data class GlyphMaterializationCertificate(
  * the immutable cluster values associated with [shapedGlyph].
  */
 public class PositionedGlyph(
-    /** Relative shaping output retained without modification. */
+    /** Relative shaping output retained without modification, or synthesized for derived content. */
     public val shapedGlyph: ShapedGlyph,
     sourceClusters: List<ShaperCluster>,
     /** Final glyph origin relative to the line baseline. */
@@ -229,9 +229,52 @@ public class PositionedGlyph(
     public val renderAssetKey: FontRenderAssetKey?,
     /** Trusted outline-route validation record in renderable mode, or `null` in layout-only mode. */
     public val materializationCertificate: GlyphMaterializationCertificate?,
+    /**
+     * Typed provenance of this final glyph.
+     *
+     * [GlyphProvenance.Direct] defaults to the complete source range mapped by
+     * [sourceClusters]. The invariants below guarantee that provenance never
+     * invents a document position: a derived glyph names exactly the real
+     * transformed source range, and a synthetic glyph anchors at a boundary of
+     * one of its mapped source clusters.
+     */
+    provenance: GlyphProvenance = GlyphProvenance.Direct(
+        TextRange(sourceClusters.first().sourceRange.start, sourceClusters.last().sourceRange.endExclusive),
+    ),
 ) {
     /** Immutable source clusters directly related to [shapedGlyph]. */
     public val sourceClusters: List<ShaperCluster> = sourceClusters.immutableListSnapshot()
+
+    /** Complete source range mapped by the clusters of this glyph. */
+    public val mappedSourceRange: TextRange =
+        TextRange(this.sourceClusters.first().sourceRange.start, this.sourceClusters.last().sourceRange.endExclusive)
+
+    /** Typed provenance of this final glyph. */
+    public val provenance: GlyphProvenance = provenance.also {
+        when (it) {
+            is GlyphProvenance.Direct -> require(it.sourceRange == mappedSourceRange) {
+                "A direct glyph must name its complete mapped source range."
+            }
+            is GlyphProvenance.Derived -> require(it.sourceRange == mappedSourceRange) {
+                "A derived glyph must name exactly its transformed source range."
+            }
+            is GlyphProvenance.Synthetic -> requireSyntheticAnchor(it)
+        }
+    }
+
+    private fun requireSyntheticAnchor(synthetic: GlyphProvenance.Synthetic) {
+        require(this.sourceClusters.size == 1) {
+            "A synthetic glyph must anchor at exactly one mapped source cluster."
+        }
+        val mapped = this.sourceClusters.single().sourceRange
+        require(
+            mapped.start.sharesVersionWith(synthetic.anchor) &&
+                synthetic.anchor >= mapped.start &&
+                synthetic.anchor <= mapped.endExclusive,
+        ) {
+            "A synthetic glyph must anchor at a real boundary of its mapped source cluster."
+        }
+    }
 
     init {
         require(this.sourceClusters.map(ShaperCluster::token) == shapedGlyph.clusterTokens) {
@@ -274,13 +317,25 @@ public class PositionedGlyphRun(
     /** Immutable final glyphs in this run's produced visual glyph order. */
     public val glyphs: List<PositionedGlyph> = glyphs.immutableListSnapshot()
 
+    /** Final glyphs whose provenance is [GlyphProvenance.Direct] or [GlyphProvenance.Derived]. */
+    private val sourceGlyphs: List<PositionedGlyph>
+        get() = this.glyphs.filter { glyph -> glyph.provenance !is GlyphProvenance.Synthetic }
+
     init {
         require(visualOrder >= 0) { "Positioned run visual order must be non-negative." }
-        require(this.glyphs.size == sourceRun.glyphs.size) {
-            "Positioned runs must contain exactly one final placement per shaped glyph."
+        require(this.glyphs.size >= sourceRun.glyphs.size) {
+            "Positioned runs must contain one final placement per shaped glyph."
         }
-        require(this.glyphs.map(PositionedGlyph::shapedGlyph) == sourceRun.glyphs) {
-            "Positioned glyph order must preserve the shaped run output order."
+        val sourceTokenSequence = sourceRun.glyphs.map { glyph -> glyph.clusterTokens }
+        var sourceCursor = 0
+        this.sourceGlyphs.forEach { glyph ->
+            val tokens = glyph.shapedGlyph.clusterTokens
+            if (sourceCursor < sourceTokenSequence.size && sourceTokenSequence[sourceCursor] == tokens) {
+                sourceCursor += 1
+            }
+        }
+        require(sourceCursor == sourceTokenSequence.size) {
+            "Direct and derived positioned glyphs must preserve the shaped run glyph order and cluster relations exactly."
         }
         require(this.glyphs.all { glyph ->
             val expectedClusters = glyph.shapedGlyph.clusterTokens.map { token ->
@@ -324,6 +379,81 @@ public data class EditableLineDiagnostic(
     init {
         require(code.isNotBlank()) { "Editable-line diagnostic codes must not be blank." }
         require(message.isNotBlank()) { "Editable-line diagnostic messages must not be blank." }
+    }
+}
+
+/**
+ * Explicit handling of `U+00AD SOFT HYPHEN` scalars for one finalized line.
+ *
+ * A soft hyphen is a real source scalar but the source publishes no visible
+ * hyphen: a line either materializes a visible hyphen-in-disguise at a
+ * selected soft-hyphen break boundary, or suppresses the scalar entirely.
+ * [materializedBoundaries] names the snapshot boundary of each soft hyphen
+ * whose visible hyphen is published; every other soft hyphen in the line is
+ * suppressed. A suppressed soft hyphen keeps its real scalar position and its
+ * caret boundaries, and publishes a zero-advance Direct-provenance glyph.
+ * This value owns no resource and is safe to share between threads.
+ */
+public class SoftHyphenLinePolicy(
+    /**
+     * Visible-hyphen boundaries in logical source order.
+     *
+     * Each boundary must be a snapshot boundary immediately following a
+     * soft-hyphen scalar; the request that uses this policy validates the
+     * boundaries against its own source snapshot and cluster partition.
+     */
+    materializedBoundaries: List<TextIndex>,
+) {
+    /** Immutable visible-hyphen boundaries in logical source order. */
+    public val materializedBoundaries: List<TextIndex> = materializedBoundaries.immutableListSnapshot()
+
+    init {
+        require(this.materializedBoundaries.zipWithNext().all { (left, right) -> left.compareTo(right) < 0 }) {
+            "Soft-hyphen materialized boundaries must be strictly ordered."
+        }
+    }
+}
+
+/**
+ * Ellipsis truncation applied to one finalized line.
+ *
+ * The line keeps its complete source range and cluster partition: scalars in
+ * [hiddenRange] publish zero-advance suppressed glyphs, and exactly one
+ * synthetic ellipsis marker glyph is anchored at the truncation boundary
+ * ([hiddenRange.start] for [EllipsisSide.INLINE_END] and [EllipsisSide.MIDDLE],
+ * [hiddenRange.endExclusive] for [EllipsisSide.INLINE_START]).
+ */
+public class LineEllipsisPolicy(
+    /** Side at which the synthetic ellipsis marker is anchored. */
+    public val side: EllipsisSide,
+    /** Exact source range hidden by this truncation. */
+    public val hiddenRange: TextRange,
+) {
+    init {
+        require(hiddenRange.start.sharesVersionWith(hiddenRange.endExclusive)) {
+            "Ellipsis hidden range must use one text revision."
+        }
+    }
+}
+
+/**
+ * Automatic hyphenation breaks materialized with a visible hyphen on one line.
+ *
+ * Every boundary names a real snapshot boundary inside a word at which an
+ * automatic service produced a break; the visible hyphen is synthetic content
+ * anchored at that boundary. No boundary creates a document position.
+ */
+public class AutomaticHyphenBreaks(
+    /** Materialized automatic-break boundaries in logical source order. */
+    materializedBoundaries: List<TextIndex>,
+) {
+    /** Immutable automatic-break boundaries in logical source order. */
+    public val materializedBoundaries: List<TextIndex> = materializedBoundaries.immutableListSnapshot()
+
+    init {
+        require(this.materializedBoundaries.zipWithNext().all { (left, right) -> left.compareTo(right) < 0 }) {
+            "Automatic hyphenation materialized boundaries must be strictly ordered."
+        }
     }
 }
 
@@ -512,6 +642,34 @@ public class EditableLineRequest(
     public val verticalMetrics: LineVerticalMetrics,
     /** Explicit layout-only or outline-renderable publication mode. */
     public val materialization: EditableLineMaterialization,
+    /**
+     * Explicit soft-hyphen handling, or `null` for the legacy raw shaping of
+     * `U+00AD` scalars.
+     *
+     * The paragraph route always supplies a policy; direct single-line callers
+     * that previously shaped soft hyphens without policy get `null` and keep
+     * the previous behavior.
+     */
+    public val softHyphenPolicy: SoftHyphenLinePolicy? = null,
+    /**
+     * Immutable source snapshot used by derived-content policies such as soft
+     * hyphen handling, or `null` when no policy needs source scalars.
+     *
+     * A non-null [softHyphenPolicy] requires a snapshot; the pair is validated
+     * during construction. The request owns no resource and keeps no more than
+     * the immutable snapshot reference.
+     */
+    public val snapshot: TextSnapshot? = null,
+    /** Explicit tab stops, alignment, and justification applied before final placement. */
+    public val positioning: ParagraphPositioningPolicy? = null,
+    /** Exact inline extent available to this line for alignment and justification spacing. */
+    public val targetInlineExtent: LayoutUnit? = null,
+    /** Whether this line is the final paragraph line, relaxing justification spacing. */
+    public val isLastLine: Boolean = false,
+    /** Automatic hyphenation boundaries materialized with a visible hyphen on this line. */
+    public val automaticHyphenBreaks: AutomaticHyphenBreaks? = null,    /** Ellipsis truncation applied to this finalized line, or `null` when none applies. */
+    public val ellipsis: LineEllipsisPolicy? = null,    /** Definitions bound to `U+FFFC` object replacement scalars inside this line. */
+    public val inlineObjects: InlineObjectSnapshot? = null,
     /** Cooperative cancellation signal observed only during renderable font materialization. */
     public val cancellationToken: CancellationToken = CancellationToken.none,
 ) {
@@ -554,6 +712,17 @@ public class EditableLineRequest(
         }
         require(this.shapedGlyphRuns.all { run -> run.glyphs.all { glyph -> glyph.yAdvance.value == 0f } }) {
             "Horizontal editable lines reject non-zero vertical glyph advances."
+        }
+        require(softHyphenPolicy == null || snapshot != null) {
+            "Soft-hyphen handling requires the line source snapshot."
+        }
+        require(softHyphenPolicy == null || snapshotContainsRange(snapshot!!, unicodeAnalysis.range)) {
+            "Soft-hyphen source snapshot must contain the line analysis range."
+        }
+        softHyphenPolicy?.materializedBoundaries?.forEach { boundary ->
+            require(boundary.sharesVersionWith(unicodeAnalysis.range.start)) {
+                "Soft-hyphen materialized boundaries must use the line source revision."
+            }
         }
         require(this.shapedGlyphRuns.all { run -> unicodeAnalysis.logicalBidiRuns.any { bidi ->
             containsRange(bidi.range, run.range) && bidi.level == run.bidiLevel
@@ -612,6 +781,7 @@ public class EditableLine(
     public val verticalMetrics: LineVerticalMetrics,
     positionedGlyphRuns: List<PositionedGlyphRun>,
     caretCandidates: List<CaretCandidate>,
+    inlineObjects: List<PositionedInlineObject> = emptyList(),
     diagnostics: List<EditableLineDiagnostic> = emptyList(),
 ) {
     /** Positioned shaped runs in physical visual order. */
@@ -619,6 +789,9 @@ public class EditableLine(
 
     /** Concrete caret geometries in physical visual traversal order. */
     public val allCaretCandidates: List<CaretCandidate> = caretCandidates.immutableListSnapshot()
+
+    /** Immutable positioned inline objects in logical source order. */
+    public val positionedInlineObjects: List<PositionedInlineObject> = inlineObjects.immutableListSnapshot()
 
     /** Immutable recoverable diagnostics emitted while positioning this line. */
     public val diagnostics: List<EditableLineDiagnostic> = diagnostics.immutableListSnapshot()
@@ -631,6 +804,13 @@ public class EditableLine(
             "Positioned glyph runs must stay within the editable line range."
         }
         requireContiguousPositionedRunPartition(range, this.positionedGlyphRuns)
+        require(this.positionedInlineObjects.zipWithNext().all { (left, right) -> left.sourceRange.start < right.sourceRange.start }) {
+            "Positioned inline objects must be ordered by logical source range."
+        }
+        require(this.positionedInlineObjects.all { placedObject ->
+            containsRange(range, placedObject.sourceRange) &&
+                placedObject.sourceRange.start < placedObject.sourceRange.endExclusive
+        }) { "Positioned inline objects must stay within the editable line range." }
         require(this.allCaretCandidates.isNotEmpty()) { "Editable lines must publish at least one caret candidate." }
         require(this.allCaretCandidates.map(CaretCandidate::visualOrder) == this.allCaretCandidates.indices.toList()) {
             "Caret candidates must use contiguous visual order."
@@ -800,8 +980,12 @@ public class EditableLine(
     private fun lineBottom(): LayoutUnit = verticalMetrics.descent
 }
 
-private fun requireContiguousRunPartition(range: TextRange, runs: List<ShapedGlyphRun>) {
-    if (range.start == range.endExclusive) {
+private fun snapshotContainsRange(snapshot: TextSnapshot, range: TextRange): Boolean =
+    range.start.sharesVersionWith(snapshot.range.start) &&
+        range.start >= snapshot.range.start &&
+        range.endExclusive <= snapshot.range.endExclusive
+
+private fun requireContiguousRunPartition(range: TextRange, runs: List<ShapedGlyphRun>) {    if (range.start == range.endExclusive) {
         require(runs.isEmpty()) { "An empty editable line must not contain shaped runs." }
         return
     }
