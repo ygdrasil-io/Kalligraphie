@@ -180,6 +180,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
         }
         val candidates = candidates(request, placements)
         val inlineObjects = placements.flatMap(RunPlacement::objects)
+            .sortedWith { left, right -> left.sourceRange.start.compareTo(right.sourceRange.start) }
         return EditableLineResult.Success(
             EditableLine(
                 range = request.unicodeAnalysis.range,

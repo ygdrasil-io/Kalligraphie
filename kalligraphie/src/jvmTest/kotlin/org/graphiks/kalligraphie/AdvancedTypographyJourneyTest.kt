@@ -1061,6 +1061,45 @@ class AdvancedTypographyJourneyTest {
     }
 
     @Test
+    fun rtlInlineObjectsArePublishedInLogicalSourceOrder() {
+        val fixture = dejavuFixture("\u05D1\uFFFC\uFFFC\u05D0")
+        val firstDefinition = InlineObjectDefinition(
+            id = InlineObjectId.create("first-rtl-object"),
+            width = LayoutUnit(300f),
+            height = LayoutUnit(200f),
+            baselineOffset = LayoutUnit(160f),
+        )
+        val secondDefinition = InlineObjectDefinition(
+            id = InlineObjectId.create("second-rtl-object"),
+            width = LayoutUnit(500f),
+            height = LayoutUnit(250f),
+            baselineOffset = LayoutUnit(180f),
+        )
+
+        val line = layoutParagraph(
+            fixture,
+            constraints(width = 3_000f, top = 50f, height = 1_200f),
+            language = "en",
+            baseDirection = BaseDirection.RIGHT_TO_LEFT,
+            inlineObjects = InlineObjectSnapshot(
+                listOf(
+                    InlineObjectEntry(fixture.textIndex(1), firstDefinition),
+                    InlineObjectEntry(fixture.textIndex(2), secondDefinition),
+                ),
+            ),
+        ).lines.single()
+
+        assertEquals(
+            listOf(fixture.range(1, 2), fixture.range(2, 3)),
+            line.positionedInlineObjects.map { item -> item.sourceRange },
+        )
+        assertEquals(
+            listOf(firstDefinition.id, secondDefinition.id),
+            line.positionedInlineObjects.map { item -> item.definition.id },
+        )
+    }
+
+    @Test
     fun inlineObjectDefinitionRejectsAnOrdinaryTextScalarInsteadOfSilentlyIgnoringIt() {
         val fixture = dejavuFixture("ab")
         val definition = InlineObjectDefinition(
