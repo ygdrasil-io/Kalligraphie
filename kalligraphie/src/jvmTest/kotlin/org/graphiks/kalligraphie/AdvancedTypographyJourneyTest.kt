@@ -727,6 +727,35 @@ class AdvancedTypographyJourneyTest {
     }
 
     @Test
+    fun successiveRtlTabsPublishPhysicalRunOrderAndTheTrueInlineExtent() {
+        val fixture = dejavuFixture("\u05D1\u0009A\u0009C")
+        val firstStop = LayoutUnit(3_000f)
+        val secondStop = LayoutUnit(5_000f)
+
+        val line = layoutParagraph(
+            fixture = fixture,
+            constraints = constraints(width = 8_000f, top = 50f, height = 1_200f),
+            language = "en",
+            baseDirection = BaseDirection.RIGHT_TO_LEFT,
+            positioning = ParagraphPositioningPolicy(
+                tabStops = listOf(
+                    TabStop(firstStop, alignment = TabAlignment.END),
+                    TabStop(secondStop, alignment = TabAlignment.END),
+                ),
+            ),
+        ).lines.single()
+
+        val a = firstGlyphOfRange(fixture, line, fixture.range(2, 3))
+        val c = firstGlyphOfRange(fixture, line, fixture.range(4, 5))
+        assertEquals(100f + firstStop.value, a.origin.x.value + a.advance.x.value)
+        assertEquals(100f + secondStop.value, c.origin.x.value + c.advance.x.value)
+        val physicalEnd = line.glyphs().maxOf { glyph -> glyph.origin.x.value + glyph.advance.x.value }
+        assertEquals(physicalEnd - 100f, line.contentMetrics.inlineAdvance.value)
+        val runStarts = line.positionedGlyphRuns.map { run -> run.glyphs.minOf { glyph -> glyph.origin.x.value } }
+        assertEquals(runStarts.sorted(), runStarts)
+    }
+
+    @Test
     fun tabLeaderIsSyntheticContentWithoutFakeDocumentCharacters() {
         val fixture = dejavuFixture("a\u0009b")
 

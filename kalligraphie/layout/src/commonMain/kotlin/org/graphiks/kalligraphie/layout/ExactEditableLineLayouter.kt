@@ -57,13 +57,17 @@ import org.graphiks.kalligraphie.api.TextSnapshot
 public object ExactEditableLineLayouter : EditableLineLayouter {
     /** Returns the deterministic physical advance of an already finalized line. */
     internal fun inlineAdvance(line: EditableLine): LayoutUnit {
-        var pen = 0.0
-        line.positionedGlyphRuns.flatMap(PositionedGlyphRun::glyphs).forEach { glyph ->
-            val glyphPenStart = glyph.origin.x.value.toDouble() - glyph.shapedGlyph.xOffset.value.toDouble()
-            pen = max(pen, glyphPenStart)
-            pen += glyph.advance.x.value.toDouble()
+        val glyphs = line.positionedGlyphRuns.flatMap(PositionedGlyphRun::glyphs)
+        if (glyphs.any { glyph -> glyph.advance.x.value < 0f }) {
+            return finiteUnit(
+                glyphs.sumOf { glyph -> glyph.advance.x.value.toDouble() },
+                "line inline advance",
+            )
         }
-        return finiteUnit(pen, "line inline advance")
+        val extent = glyphs.maxOfOrNull { glyph ->
+            glyph.origin.x.value.toDouble() - glyph.shapedGlyph.xOffset.value.toDouble() + glyph.advance.x.value.toDouble()
+        } ?: 0.0
+        return finiteUnit(max(0.0, extent), "line inline advance")
     }
 
     /**
@@ -198,7 +202,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
         val ordered = visualRuns.map { run -> refinedBySource.getValue(run) }
         val tabs = tabFields(request, ordered)
         var pen = 0.0
-        return ordered.mapIndexed { visualOrder, refined ->
+        val placements = ordered.mapIndexed { visualOrder, refined ->
             val objects = mutableListOf<PositionedInlineObject>()
             val glyphs = expandAndPositionRun(request, refined, pen, objects, tabs)
             val runStart = glyphs.firstOrNull()?.penStart?.value?.toDouble() ?: pen
@@ -216,6 +220,24 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                 objects = objects,
             )
         }
+        return placements
+            .sortedWith(
+                compareBy<RunPlacement> { placement ->
+                    placement.glyphs.minOfOrNull { glyph -> glyph.penStart.value.toDouble() }
+                        ?: placement.xStart.value.toDouble()
+                }.thenBy(RunPlacement::visualOrder),
+            )
+            .mapIndexed { visualOrder, placement ->
+                RunPlacement(
+                    sourceRun = placement.sourceRun,
+                    visualOrder = visualOrder,
+                    glyphs = placement.glyphs,
+                    xStart = placement.xStart,
+                    xEnd = placement.xEnd,
+                    caretPositions = placement.caretPositions,
+                    objects = placement.objects,
+                )
+            }
     }
 
     private fun visualRuns(request: EditableLineRequest): List<ShapedGlyphRun> {
