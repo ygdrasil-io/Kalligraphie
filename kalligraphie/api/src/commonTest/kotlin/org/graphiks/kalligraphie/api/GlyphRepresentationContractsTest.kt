@@ -8,6 +8,20 @@ import kotlin.test.assertNotEquals
 
 class GlyphRepresentationContractsTest {
     @Test
+    fun renderVariantsKeepPaletteAndForegroundSelectionInTheirIdentity() {
+        val paletteZero = FontRenderVariantSnapshot(
+            cpalPaletteIndex = 0,
+            foregroundColor = GlyphColor(1, 2, 3),
+        )
+        val paletteOne = FontRenderVariantSnapshot(
+            cpalPaletteIndex = 1,
+            foregroundColor = GlyphColor(1, 2, 3),
+        )
+
+        assertNotEquals(paletteZero.key, paletteOne.key)
+    }
+
+    @Test
     fun paintGraphsRejectReferenceCyclesBeforePublication() {
         assertFailsWith<IllegalArgumentException> {
             GlyphPaintIR(
