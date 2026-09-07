@@ -75,7 +75,8 @@ public data class GlyphRepresentationProfileKey(
             GlyphRepresentationProfileKey(
                 kind = GlyphRepresentationProfileKind.NATIVE_HANDLE,
                 schemaVersion = profile.schemaVersion,
-                parameters = "${profile.bridgeKind}:${profile.bridgeVersion}",
+                parameters = listOf(profile.bridgeKind, profile.bridgeVersion)
+                    .joinToString(":") { value -> "${value.length}:$value" },
             )
     }
 }

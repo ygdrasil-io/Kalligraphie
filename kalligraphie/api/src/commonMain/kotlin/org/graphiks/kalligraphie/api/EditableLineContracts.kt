@@ -329,7 +329,7 @@ public class PositionedGlyph(
     public val transform: LayoutAffineTransform = LayoutAffineTransform.identity,
     /** Exact render asset key in renderable mode, or `null` in layout-only mode. */
     public val renderAssetKey: FontRenderAssetKey?,
-    /** Trusted outline-route validation record in renderable mode, or `null` in layout-only mode. */
+    /** Trusted representation-route validation record in renderable mode, or `null` in layout-only mode. */
     public val materializationCertificate: GlyphMaterializationCertificate?,
     /**
      * Typed provenance of this final glyph.

@@ -314,6 +314,10 @@ class GlyphRepresentationContractsTest {
             GlyphRepresentationProfileKey.paintGraph(paint),
             GlyphRepresentationProfileKey.paintGraph(changedOutlineSchema),
         )
+        assertNotEquals(
+            GlyphRepresentationProfileKey.nativeHandle(NativeHandleProfile(bridgeKind = "a:b", bridgeVersion = "c")),
+            GlyphRepresentationProfileKey.nativeHandle(NativeHandleProfile(bridgeKind = "a", bridgeVersion = "b:c")),
+        )
     }
 
     @Test
