@@ -80,9 +80,12 @@ public class EmbeddedFontCatalog(
                 capabilities = FontFaceCapabilities(
                     characterMapping = true,
                     shaping = true,
-                    outline = true,
+                    outline = parsedFonts.getValue(id).tableRecords.containsKey("glyf") &&
+                        parsedFonts.getValue(id).tableRecords.containsKey("loca"),
                     paintGraph = parsedFonts.getValue(id).tableRecords.containsKey("COLR") &&
                         parsedFonts.getValue(id).tableRecords.containsKey("CPAL"),
+                    bitmap = parsedFonts.getValue(id).tableRecords.containsKey("EBLC") &&
+                        parsedFonts.getValue(id).tableRecords.containsKey("EBDT"),
                 ),
             )
         }
@@ -128,7 +131,7 @@ public class EmbeddedFontCatalog(
                         code = "font.unsupported-representation-profile",
                         severity = FontDiagnosticSeverity.ERROR,
                         location = FontDiagnosticLocation.Source,
-                        message = "Only LAYOUT_ONLY, schemaVersion=1 outlines, and declared COLR/CPAL version 0 paint profiles are supported.",
+                        message = "Only LAYOUT_ONLY, schemaVersion=1 outlines, declared COLR/CPAL version 0 paint profiles, and declared EBDT format 1 bitmap profiles are supported.",
                     ),
                 ),
             )
@@ -141,11 +144,17 @@ public class EmbeddedFontCatalog(
             FontAccessRequirementsSnapshot.Mode.LAYOUT_ONLY -> true
             FontAccessRequirementsSnapshot.Mode.RENDERABLE -> acceptedProfiles.firstOrNull().let { profile ->
                 when (profile) {
-                    is org.graphiks.kalligraphie.api.OutlineProfile -> profile.schemaVersion == 1
+                    is org.graphiks.kalligraphie.api.OutlineProfile -> profile.schemaVersion == 1 &&
+                        parsedFont.tableRecords.containsKey("glyf") &&
+                        parsedFont.tableRecords.containsKey("loca")
                     is org.graphiks.kalligraphie.api.PaintGraphProfile ->
                         profile.schemaVersion == 1 &&
                             parsedFont.tableRecords.containsKey("COLR") &&
                             parsedFont.tableRecords.containsKey("CPAL")
+                    is org.graphiks.kalligraphie.api.BitmapProfile ->
+                        profile.schemaVersion == 1 &&
+                            parsedFont.tableRecords.containsKey("EBLC") &&
+                            parsedFont.tableRecords.containsKey("EBDT")
                     else -> false
                 }
             }
