@@ -45,6 +45,16 @@ public sealed interface GlyphPaintNode {
         override val children: List<Int> = emptyList()
     }
 
+    /** Paints one resolved portable path with a solid color. */
+    public data class Path(
+        /** Path geometry to paint. */
+        public val path: GlyphPaintPath,
+        /** Color applied to the path. */
+        public val color: GlyphColor,
+    ) : GlyphPaintNode {
+        override val children: List<Int> = emptyList()
+    }
+
     /** Groups child nodes in source order with one explicitly declared composition operation. */
     public class Group(
         children: List<Int>,

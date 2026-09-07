@@ -278,6 +278,8 @@ class GlyphRepresentationContractsTest {
                 maxDecodedPaletteBytes = 5,
                 maxBaseGlyphRecords = 6,
                 maxLayerRecords = 7,
+                maxSvgDocuments = 8,
+                maxSvgTransformOperations = 9,
             ),
             outlineProfile = outlineProfile(),
         )
@@ -302,7 +304,7 @@ class GlyphRepresentationContractsTest {
         )
 
         assertEquals(
-            "nodes=SOLID_OUTLINE,GROUP;composition=SOURCE_OVER;limits=3,2,2,10,1,0,2,3,4,5,6,7;outline=1,1024,32,128,8,32",
+            "nodes=SOLID_OUTLINE,GROUP;composition=SOURCE_OVER;limits=3,2,2,10,1,0,2,3,4,5,6,7,8,9;outline=1,1024,32,128,8,32",
             GlyphRepresentationProfileKey.paintGraph(paint).parameters,
         )
         assertEquals(

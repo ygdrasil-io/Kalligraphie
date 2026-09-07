@@ -6,8 +6,7 @@ machine virtuelle Java (JVM). Les contrats publics restent portables, mais
 cette prise en charge exécutable est limitée à la JVM. L’utilisateur de la
 bibliothèque fournit des octets SFNT capturés à `Kalligraphie.embedded(...)`,
 sélectionne un enregistrement de face stable, crée une instance de fonte, puis utilise une
-ressource de rendu pour matérialiser les contours décrits par
-`GlyphOutlineIR`.
+ressource de rendu pour matérialiser une représentation portable de glyphe.
 
 Le périmètre fonctionnel supporté est volontairement étroit :
 
@@ -16,9 +15,24 @@ Le périmètre fonctionnel supporté est volontairement étroit :
 - des sources OpenType embarquées, avec l’index de face `0` pour chaque source ;
 - `LAYOUT_ONLY` pour la table `cmap` (correspondance entre caractères et
   glyphes) et les métriques ;
-- `RENDERABLE` uniquement avec la version `1` du schéma `OutlineProfile` ;
-- contours de glyphes exprimés en unités de conception (unités internes de la
+- `RENDERABLE` avec un `OutlineProfile`, un `PaintGraphProfile` ou un
+  `BitmapProfile` de version de schéma `1`, si la face sélectionnée déclare la
+  route correspondante ;
+- contours `glyf` exprimés en unités de conception (unités internes de la
   fonte), avec des métriques mises à l’échelle séparément en `LayoutUnit` ;
+- graphes de peinture COLR version 0 et CPAL version 0, composés de contours
+  pleins, de groupes ordonnés, d’une sélection exacte de palette CPAL et d’une
+  couleur de premier plan explicite ;
+- table SVG-in-OpenType version 0 avec documents UTF-8 bruts uniquement :
+  éléments `svg`, `g` et `path` auto-fermants ; transformations `translate` et
+  `scale` ; commandes de chemin `M`, `L`, `H`, `V`, `C`, `S` et `Z` ; et
+  remplissages opaques `#RRGGBB`. Les scripts, ressources externes, entités,
+  animations, compression, gradients, clips (découpes), masques, contours tracés et
+  attributs non déclarés sont refusés avant publication d’une ressource ;
+- strikes bitmap (images matricielles, tailles bitmap exactes) EBLC version 2 / EBDT version 2,
+  avec sous-table d’index format 1 et image format 1 uniquement : alpha un bit
+  aligné sur les octets, décodé en `ALPHA_8` sRGB, pour un strike demandé à
+  l’identique ;
 - ressources de rendu détachées qui restent utilisables après la fermeture du
   gestionnaire propriétaire ou de la ressource attachée.
 
@@ -29,16 +43,23 @@ val size = FontInstanceDescriptor(LayoutUnit(2048f))
 val requirements = FontAccessRequirementsSnapshot.renderable(outlineProfile)
 ```
 
-L’accès aux glyphes pour le rendu exige un profil de contour explicite. Fermer
+L’accès aux glyphes pour le rendu exige un profil de représentation explicite. Fermer
 un gestionnaire de ressources ou une ressource de rendu est idempotent (répéter
 la fermeture produit le même résultat). Les nouvelles acquisitions après
 fermeture renvoient `font.resource-closed` ; une ressource détachée conserve les
 données immuables requises par `resolveGlyph(...)`.
 
-Hors périmètre : TTC/OTC, CFF/CFF2, variations, styles synthétiques, COLR, SVG,
-glyphes sous forme d’images matricielles, fontes système, ajustement des
-contours aux pixels (hinting), rastérisation, moteurs natifs de gestion des
-fontes et descripteurs de fonte propres à la plateforme.
+Sur macOS, l’artefact JVM expose aussi `MacosSystemFontCatalog.open()`. Il
+capture, sous limites, les fichiers `.ttf` réguliers dans un instantané
+portable et utilise les mêmes routes que les fontes embarquées. Il n’expose pas
+de handle (poignée) CoreText et ne déclare pas de prise en charge de `.otf` ni
+de `.ttc`.
+
+Hors périmètre : TTC/OTC, CFF/CFF2, variations, styles synthétiques, versions
+de COLR autres que 0, contenu SVG hors du sous-ensemble déclaré, codecs et
+formats bitmap autres que la route EBLC/EBDT déclarée, ajustement des contours
+aux pixels (hinting), rastérisation, moteurs natifs de gestion des fontes et
+descripteurs de fonte propres à la plateforme.
 
 ## Lignes Unicode éditables exactes
 

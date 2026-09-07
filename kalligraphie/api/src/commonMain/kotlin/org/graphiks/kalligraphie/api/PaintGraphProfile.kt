@@ -5,6 +5,9 @@ public enum class GlyphPaintNodeKind {
     /** A solid fill of one complete outline. */
     SOLID_OUTLINE,
 
+    /** A solid fill of one portable path that can contain cubic Bézier segments. */
+    PATH,
+
     /** An ordered compositing group. */
     GROUP,
 }
@@ -35,6 +38,10 @@ public data class PaintGraphLimits(
     public val maxBaseGlyphRecords: Int = 65_536,
     /** Maximum COLR layer records decoded before selecting one glyph. */
     public val maxLayerRecords: Int = 65_536,
+    /** Maximum SVG-in-OpenType document records decoded for one paint route. */
+    public val maxSvgDocuments: Int = 4_096,
+    /** Maximum SVG transform operations normalized for one paint route. */
+    public val maxSvgTransformOperations: Int = 4_096,
 ) {
     init {
         require(maxNodes > 0) { "maxNodes must be positive." }
@@ -49,6 +56,8 @@ public data class PaintGraphLimits(
         require(maxDecodedPaletteBytes > 0) { "maxDecodedPaletteBytes must be positive." }
         require(maxBaseGlyphRecords > 0) { "maxBaseGlyphRecords must be positive." }
         require(maxLayerRecords > 0) { "maxLayerRecords must be positive." }
+        require(maxSvgDocuments > 0) { "maxSvgDocuments must be positive." }
+        require(maxSvgTransformOperations > 0) { "maxSvgTransformOperations must be positive." }
     }
 }
 
@@ -88,9 +97,12 @@ public class PaintGraphProfile(
         if (paint.schemaVersion != schemaVersion || paint.nodes.size > limits.maxNodes) return false
         val references = paint.nodes.sumOf { node -> node.children.size }
         if (references > limits.maxReferences) return false
-        val paths = paint.nodes.count { node -> node is GlyphPaintNode.SolidOutline }
+        val paths = paint.nodes.count { node -> node is GlyphPaintNode.SolidOutline || node is GlyphPaintNode.Path }
         if (paths > limits.maxPaths) return false
         if (paint.nodes.filterIsInstance<GlyphPaintNode.SolidOutline>().any { node -> !outlineProfile.acceptsOutline(node.outline) }) {
+            return false
+        }
+        if (paint.nodes.filterIsInstance<GlyphPaintNode.Path>().any { node -> !outlineProfile.acceptsPath(node.path) }) {
             return false
         }
         if (paint.nodes.any { node -> node.kind() !in acceptedNodeKinds }) return false
@@ -119,6 +131,7 @@ public class PaintGraphProfile(
 
 private fun GlyphPaintNode.kind(): GlyphPaintNodeKind = when (this) {
     is GlyphPaintNode.SolidOutline -> GlyphPaintNodeKind.SOLID_OUTLINE
+    is GlyphPaintNode.Path -> GlyphPaintNodeKind.PATH
     is GlyphPaintNode.Group -> GlyphPaintNodeKind.GROUP
 }
 
@@ -131,6 +144,11 @@ internal fun OutlineProfile.acceptsOutline(outline: GlyphOutlineIR): Boolean =
         outline.limits.maxPoints <= maxPoints &&
         outline.limits.maxCompositeDepth <= maxCompositeDepth &&
         outline.limits.maxCompositeComponents <= maxCompositeComponents
+
+internal fun OutlineProfile.acceptsPath(path: GlyphPaintPath): Boolean =
+    path.contourCount <= maxContours &&
+        path.pointCount <= maxPoints &&
+        path.estimatedByteSize <= maxBytes
 
 private fun GlyphPaintIR.exceedsDepth(maximum: Int): Boolean {
     val greatestVisitedDepth = IntArray(nodes.size)

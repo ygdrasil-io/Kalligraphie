@@ -104,6 +104,8 @@ private fun PaintGraphLimits.canonicalPaintLimits(): String =
         maxDecodedPaletteBytes,
         maxBaseGlyphRecords,
         maxLayerRecords,
+        maxSvgDocuments,
+        maxSvgTransformOperations,
     ).joinToString(",")
 
 private fun BitmapLimits.canonicalBitmapLimits(): String =

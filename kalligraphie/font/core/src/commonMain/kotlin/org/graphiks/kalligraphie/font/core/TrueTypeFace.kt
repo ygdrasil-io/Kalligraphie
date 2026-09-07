@@ -40,6 +40,9 @@ import org.graphiks.kalligraphie.font.sfnt.ColrV0Layer
 import org.graphiks.kalligraphie.font.sfnt.EbdtFormatOneData
 import org.graphiks.kalligraphie.font.sfnt.EbdtFormatOneReader
 import org.graphiks.kalligraphie.font.sfnt.ParsedTrueTypeFont
+import org.graphiks.kalligraphie.font.sfnt.SvgGlyphPaint
+import org.graphiks.kalligraphie.font.sfnt.SvgOpenTypeData
+import org.graphiks.kalligraphie.font.sfnt.SvgOpenTypeReader
 import org.graphiks.kalligraphie.font.sfnt.slice
 
 internal class TrueTypeFace(
@@ -49,6 +52,7 @@ internal class TrueTypeFace(
     private val resource: PreparedFontResource,
     private val outlineRouteSupported: Boolean,
     private val paintGraphSupported: Boolean,
+    private val svgRouteSupported: Boolean,
     private val bitmapRouteSupported: Boolean,
 ) : FontFace {
     override val metadata: FontFaceMetadata = parsedFont.metadata
@@ -85,6 +89,7 @@ internal class TrueTypeFace(
                 parsedFont = parsedFont,
                 outlineRouteSupported = outlineRouteSupported,
                 paintGraphSupported = paintGraphSupported,
+                svgRouteSupported = svgRouteSupported,
                 bitmapRouteSupported = bitmapRouteSupported,
             ),
         )
@@ -111,6 +116,7 @@ internal data class TrueTypeFontInstance(
     private val parsedFont: ParsedTrueTypeFont,
     private val outlineRouteSupported: Boolean,
     private val paintGraphSupported: Boolean,
+    private val svgRouteSupported: Boolean,
     private val bitmapRouteSupported: Boolean,
 ) : FontInstance {
     override fun resolveGlyph(codePoint: Int): FontOperationResult<GlyphResolution> {
@@ -156,8 +162,15 @@ internal data class TrueTypeFontInstance(
         if (requirements.mode != FontAccessRequirementsSnapshot.Mode.RENDERABLE) {
             return failure(FontError.UnsupportedRepresentationProfile("A renderable access mode is required.", FontDiagnosticLocation.FaceId(faceId)))
         }
-        val profile = requirements.acceptedProfiles.firstOrNull(::isSupportedProfile)
-            ?: return failure(FontError.UnsupportedRepresentationProfile("At least one representation profile is required.", FontDiagnosticLocation.FaceId(faceId)))
+        val profiles = requirements.acceptedProfiles.filter(::isSupportedProfile)
+        if (profiles.isEmpty()) {
+            return failure(
+                FontError.UnsupportedRepresentationProfile(
+                    "No accepted representation profile is supported by this embedded font.",
+                    FontDiagnosticLocation.FaceId(faceId),
+                ),
+            )
+        }
         if (resolver !is EmbeddedFontAssetResolver) {
             return failure(FontError.InvalidFontData("Resolver was not opened by the embedded TrueType catalog.", FontDiagnosticLocation.FaceId(faceId)))
         }
@@ -166,8 +179,11 @@ internal data class TrueTypeFontInstance(
         }
         val lease = resolver.acquireAssetLease(faceId)
             ?: return failure(FontError.ResourceClosed("Asset resolver is closed."))
+        var leaseTransferred = false
         return try {
-            val outcome = when (profile) {
+            var firstFailure: FontOperationResult.Failure? = null
+            for (profile in profiles) {
+                val outcome = when (profile) {
                 is org.graphiks.kalligraphie.api.OutlineProfile -> {
                     if (renderVariant != FontRenderVariantSnapshot.default || profile.schemaVersion != 1) {
                         failure(
@@ -190,6 +206,36 @@ internal data class TrueTypeFontInstance(
                 is PaintGraphProfile -> {
                     if (profile.schemaVersion != 1) {
                         failure(FontError.UnsupportedRepresentationProfile("Only paint-graph schema version 1 is supported.", FontDiagnosticLocation.FaceId(faceId)))
+                    } else if (svgRouteSupported) {
+                        if (renderVariant != FontRenderVariantSnapshot.default) {
+                            failure(
+                                FontError.UnsupportedRepresentationProfile(
+                                    "SVG-in-OpenType paint assets accept only the default render variant.",
+                                    FontDiagnosticLocation.FaceId(faceId),
+                                ),
+                            )
+                        } else {
+                            when (val svgData = readSvgOpenType(profile)) {
+                                is FontOperationResult.Success -> FontOperationResult.Success(
+                                    SvgOpenTypeRenderAssetHandle(
+                                        faceId = faceId,
+                                        resourceLease = lease,
+                                        key = FontRenderAssetKey(
+                                            fontInstanceKey = key,
+                                            variant = renderVariant.key,
+                                            representationProfile = profile,
+                                            generation = resolver.generation,
+                                        ),
+                                        profile = profile,
+                                        svgData = svgData.value,
+                                        glyphCount = parsedFont.metadata.glyphCount,
+                                    ),
+                                )
+
+                                is FontOperationResult.Failure -> svgData
+                                is FontOperationResult.Cancelled -> svgData
+                            }
+                        }
                     } else {
                         when (val colorData = readColrCpalV0(profile)) {
                             is FontOperationResult.Success -> {
@@ -258,18 +304,31 @@ internal data class TrueTypeFontInstance(
                     }
                 }
 
-                else -> failure(
-                    FontError.UnsupportedRepresentationProfile(
-                        "The embedded TrueType provider supports only outline, COLR version 0 paint, and EBDT format 1 bitmap profiles.",
-                        FontDiagnosticLocation.FaceId(faceId),
-                    ),
-                )
+                    else -> failure(
+                        FontError.UnsupportedRepresentationProfile(
+                            "The embedded TrueType provider supports only outline, COLR version 0 or SVG-in-OpenType paint, and EBDT format 1 bitmap profiles.",
+                            FontDiagnosticLocation.FaceId(faceId),
+                        ),
+                    )
+                }
+                when (outcome) {
+                    is FontOperationResult.Success -> {
+                        leaseTransferred = true
+                        return outcome
+                    }
+
+                    is FontOperationResult.Failure -> if (firstFailure == null) firstFailure = outcome
+                    is FontOperationResult.Cancelled -> return outcome
+                }
             }
-            if (outcome !is FontOperationResult.Success) lease.release()
-            outcome
-        } catch (throwable: Throwable) {
-            lease.release()
-            throw throwable
+            firstFailure ?: failure(
+                FontError.UnsupportedRepresentationProfile(
+                    "No accepted representation profile can be certified by this embedded font.",
+                    FontDiagnosticLocation.FaceId(faceId),
+                ),
+            )
+        } finally {
+            if (!leaseTransferred) lease.release()
         }
     }
 
@@ -277,7 +336,7 @@ internal data class TrueTypeFontInstance(
         when (profile) {
             is org.graphiks.kalligraphie.api.OutlineProfile ->
                 profile.schemaVersion == 1 && outlineRouteSupported
-            is PaintGraphProfile -> profile.schemaVersion == 1 && paintGraphSupported
+            is PaintGraphProfile -> profile.schemaVersion == 1 && (paintGraphSupported || svgRouteSupported)
             is BitmapProfile ->
                 profile.schemaVersion == 1 && bitmapRouteSupported
             else -> false
@@ -323,6 +382,17 @@ internal data class TrueTypeFontInstance(
         val ebdt = slice(sourceBytes, ebdtRecord)
             ?: return failure(FontError.InvalidFontData("EBDT table exceeds embedded source bytes.", FontDiagnosticLocation.Table("EBDT")))
         return EbdtFormatOneReader.read(eblc, ebdt, parsedFont.metadata.glyphCount, profile)
+    }
+
+    private fun readSvgOpenType(profile: PaintGraphProfile): FontOperationResult<SvgOpenTypeData> {
+        val svgRecord = parsedFont.tableRecords["SVG "]
+            ?: return failure(FontError.UnsupportedRepresentationProfile("The font has no SVG table.", FontDiagnosticLocation.FaceId(faceId)))
+        if (svgRecord.length > profile.limits.maxSourceBytes.toLong()) {
+            return failure(FontError.ResourceLimitExceeded("SVG source-byte limit exceeded.", FontDiagnosticLocation.Table("SVG ")))
+        }
+        val svg = slice(resource.preparedFont.copySourceBytes(), svgRecord)
+            ?: return failure(FontError.InvalidFontData("SVG table exceeds embedded source bytes.", FontDiagnosticLocation.Table("SVG ")))
+        return SvgOpenTypeReader.read(svg, parsedFont.metadata.glyphCount, profile)
     }
 
 }
@@ -379,6 +449,76 @@ internal class TrueTypeRenderAssetHandle(
                 return FontOperationResult.Cancelled()
             }
             OutlineMaterializer.materialize(outline, profile, cancellationToken)
+        } finally {
+            lease.release()
+        }
+    }
+
+    override fun close(): FontOperationResult<Unit> {
+        lifecycle.close()
+        return FontOperationResult.Success(Unit)
+    }
+
+    private fun releaseResourceLease() {
+        resourceLease?.release()
+        resourceLease = null
+    }
+}
+
+/** Asset handle for the normalized, profile-certified SVG-in-OpenType paint route. */
+internal class SvgOpenTypeRenderAssetHandle(
+    override val faceId: FontFaceId,
+    private var resourceLease: PreparedFontResourceLease?,
+    override val key: FontRenderAssetKey,
+    private val profile: PaintGraphProfile,
+    private val svgData: SvgOpenTypeData,
+    private val glyphCount: Int,
+) : FontRenderAssetHandle {
+    private val lifecycle = FontHandleLifecycle(::releaseResourceLease)
+
+    override fun detach(): FontOperationResult<FontRenderAssetHandle> {
+        val lease = lifecycle.acquireLease()
+            ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+        return try {
+            val detachedResourceLease = resourceLease?.resource?.acquireLease()
+                ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+            FontOperationResult.Success(
+                SvgOpenTypeRenderAssetHandle(
+                    faceId = faceId,
+                    resourceLease = detachedResourceLease,
+                    key = key.copy(representationProfile = profile),
+                    profile = profile,
+                    svgData = svgData,
+                    glyphCount = glyphCount,
+                ),
+            )
+        } finally {
+            lease.release()
+        }
+    }
+
+    override fun resolveGlyph(request: FontGlyphRequest): FontOperationResult<GlyphRepresentation> =
+        resolveGlyph(request, CancellationToken.none)
+
+    override fun resolveGlyph(
+        request: FontGlyphRequest,
+        cancellationToken: CancellationToken,
+    ): FontOperationResult<GlyphRepresentation> {
+        val lease = lifecycle.acquireLease()
+            ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+        return try {
+            if (cancellationToken.isCancellationRequested()) return FontOperationResult.Cancelled()
+            if (resourceLease == null) return failure(FontError.ResourceClosed("Render asset is closed."))
+            if (request.glyphId !in 0 until glyphCount) return failure(FontError.GlyphOutOfRange(request.glyphId))
+            val representation = when (val paint = svgData.glyphPaint(GlyphId(request.glyphId))) {
+                null,
+                SvgGlyphPaint.Empty,
+                -> GlyphRepresentation.Empty
+
+                is SvgGlyphPaint.Paint -> GlyphRepresentation.Paint(paint.paint)
+            }
+            if (cancellationToken.isCancellationRequested()) FontOperationResult.Cancelled()
+            else FontOperationResult.Success(representation)
         } finally {
             lease.release()
         }

@@ -5,7 +5,7 @@ Kalligraphie exposes an embedded TrueType path through
 contracts stay portable, but this executable route is JVM-only. A
 consumer supplies captured SFNT bytes to `Kalligraphie.embedded(...)`,
 selects a stable face record, creates a font instance, and uses a render asset handle to
-materialize `GlyphOutlineIR` outlines.
+materialize a portable glyph representation.
 
 The supported functional scope is intentionally narrow:
 
@@ -13,9 +13,22 @@ The supported functional scope is intentionally narrow:
 - static SFNT TrueType only: `0x00010000` and `true`;
 - embedded OpenType sources with face index `0` for each source;
 - `LAYOUT_ONLY` for cmap and metrics;
-- `RENDERABLE` only with `OutlineProfile` schema version `1`;
-- glyph outlines in design units, with separately scaled `LayoutUnit`
+- `RENDERABLE` with schema version `1` `OutlineProfile`, `PaintGraphProfile`,
+  or `BitmapProfile` when the selected face advertises the matching route;
+- `glyf` outlines in design units, with separately scaled `LayoutUnit`
   metrics;
+- COLR version 0 and CPAL version 0 paint graphs made from solid outlines,
+  ordered groups, exact CPAL palette selection, and an explicit foreground
+  color;
+- SVG-in-OpenType table version 0 with raw UTF-8 documents only: `svg`, `g`,
+  and self-closing `path` elements; `translate` and `scale`; `M`, `L`, `H`,
+  `V`, `C`, `S`, and `Z` path commands; and opaque `#RRGGBB` fills. Scripts,
+  external resources, entities, animation, compression, gradients, clips,
+  masks, strokes, and unlisted attributes are rejected before an asset is
+  published;
+- EBLC version 2 / EBDT version 2 bitmap strikes using index subtable format 1
+  and image format 1 only: byte-aligned one-bit alpha decoded to `ALPHA_8` in
+  sRGB, with an exact requested strike;
 - detached render assets that keep resolving after the owning resolver or
   attached handle is closed.
 
@@ -26,10 +39,15 @@ val size = FontInstanceDescriptor(LayoutUnit(2048f))
 val requirements = FontAccessRequirementsSnapshot.renderable(outlineProfile)
 ```
 
-Renderable glyph access requires an explicit outline profile. Closing a
+Renderable glyph access requires an explicit representation profile. Closing a
 resolver or render asset is idempotent. New acquisitions after closure return
 `font.resource-closed`; a detached asset owns the immutable data required for
 `resolveGlyph(...)`.
+
+On macOS, the JVM artifact also exposes `MacosSystemFontCatalog.open()`. It
+captures bounded, regular `.ttf` files into a portable snapshot and uses the
+same routes as embedded fonts. It does not expose CoreText handles, nor claim
+support for `.otf` or `.ttc` files.
 
 ## Exact editable Unicode lines
 
@@ -99,6 +117,7 @@ closes.
 
 Out of scope for the editable-line API: hyphenation,
 justification, vertical writing, rendering pixels, GPU APIs, TTC/OTC,
-CFF/CFF2, variations, synthetic styles, COLR, SVG, bitmap glyphs, and system
-fonts. See [Editable Paragraphs](editable-paragraphs.md) for the JVM multiline
-paragraph route.
+CFF/CFF2, variations, synthetic styles, and render routes other than the
+outline route it explicitly requests. See
+[Editable Paragraphs](editable-paragraphs.md) for the JVM multiline paragraph
+route.
