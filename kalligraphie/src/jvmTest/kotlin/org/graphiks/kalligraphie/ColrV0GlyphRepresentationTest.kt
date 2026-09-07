@@ -17,6 +17,7 @@ import org.graphiks.kalligraphie.api.PaintGraphLimits
 import org.graphiks.kalligraphie.api.PaintGraphProfile
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 
 class ColrV0GlyphRepresentationTest {
@@ -72,6 +73,100 @@ class ColrV0GlyphRepresentationTest {
         }
     }
 
+    @Test
+    fun reopensPaintAssetWithItsExactForegroundVariantAfterTheOriginalHandleCloses() {
+        val catalog = success(
+            Kalligraphie.embedded(
+                fixtureBytes(),
+                FontSourceProvenance("EmojiTwo COLRv0 4.0"),
+            ),
+        )
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(paintProfile()))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(2_048f))))
+        val foreground = GlyphColor(17, 34, 51, 68)
+
+        try {
+            val glyph = GlyphId(2_650)
+            val original = success(
+                instance.acquireRenderAsset(
+                    resolver,
+                    FontRenderVariantSnapshot(foregroundColor = foreground),
+                    requirements,
+                ),
+            )
+            val key = original.key
+            original.close()
+
+            val reopened = success(resolver.reopen(key))
+            try {
+                val paint = assertIs<GlyphRepresentation.Paint>(
+                    success(reopened.resolveGlyph(org.graphiks.kalligraphie.api.FontGlyphRequest(glyph))),
+                ).paint
+
+                assertEquals(
+                    foreground,
+                    assertIs<GlyphPaintNode.SolidOutline>(paint.nodes[paint.rootNode]).color,
+                )
+            } finally {
+                reopened.close()
+            }
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
+    fun reopensDefaultPaintAssetAfterTheOriginalHandleCloses() {
+        val catalog = success(
+            Kalligraphie.embedded(
+                fixtureBytes(),
+                FontSourceProvenance("EmojiTwo COLRv0 4.0"),
+            ),
+        )
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(paintProfile()))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(2_048f))))
+
+        try {
+            val original = success(
+                instance.acquireRenderAsset(resolver, FontRenderVariantSnapshot.default, requirements),
+            )
+            val key = original.key
+            original.close()
+
+            val reopened = success(resolver.reopen(key))
+            try {
+                val paint = assertIs<GlyphRepresentation.Paint>(
+                    success(reopened.resolveGlyph(org.graphiks.kalligraphie.api.FontGlyphRequest(GlyphId(2_650)))),
+                ).paint
+
+                assertEquals(
+                    GlyphColor(0, 0, 0),
+                    assertIs<GlyphPaintNode.SolidOutline>(paint.nodes[paint.rootNode]).color,
+                )
+            } finally {
+                reopened.close()
+            }
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
+    fun doesNotAdvertisePaintGraphForAnUnsupportedColrVersion() {
+        val catalog = success(
+            Kalligraphie.embedded(
+                fixtureBytes().withTableUInt16("COLR", 1),
+                FontSourceProvenance("EmojiTwo COLRv0 with an unsupported COLR version"),
+            ),
+        )
+
+        assertFalse(catalog.faces.single().capabilities.paintGraph)
+    }
+
     private fun paintProfile(): PaintGraphProfile = PaintGraphProfile(
         acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE, GlyphPaintNodeKind.GROUP),
         acceptedCompositionModes = listOf(GlyphPaintCompositionMode.SOURCE_OVER),
@@ -103,4 +198,18 @@ class ColrV0GlyphRepresentationTest {
 
     private fun <T> success(result: FontOperationResult<T>): T =
         assertIs<FontOperationResult.Success<T>>(result).value
+}
+
+private fun ByteArray.withTableUInt16(tag: String, value: Int): ByteArray = copyOf().also { bytes ->
+    val tableCount = (bytes[4].toInt() and 0xFF shl 8) or (bytes[5].toInt() and 0xFF)
+    val recordOffset = (0 until tableCount)
+        .map { index -> 12 + index * 16 }
+        .first { offset -> bytes.decodeToString(offset, offset + 4) == tag }
+    val tableOffset =
+        (bytes[recordOffset + 8].toInt() and 0xFF shl 24) or
+            (bytes[recordOffset + 9].toInt() and 0xFF shl 16) or
+            (bytes[recordOffset + 10].toInt() and 0xFF shl 8) or
+            (bytes[recordOffset + 11].toInt() and 0xFF)
+    bytes[tableOffset] = (value ushr 8).toByte()
+    bytes[tableOffset + 1] = value.toByte()
 }

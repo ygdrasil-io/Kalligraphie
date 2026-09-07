@@ -29,6 +29,8 @@ public data class PaintGraphLimits(
     public val maxPaletteEntries: Int = 4_096,
     /** Maximum CPAL color records decoded for this route. */
     public val maxColorRecords: Int = 65_536,
+    /** Maximum bytes retained by expanded CPAL palettes after shared source records are resolved. */
+    public val maxDecodedPaletteBytes: Int = maxColorRecords.coerceAtMost(Int.MAX_VALUE / 4) * 4,
     /** Maximum COLR base-glyph records decoded before selecting one glyph. */
     public val maxBaseGlyphRecords: Int = 65_536,
     /** Maximum COLR layer records decoded before selecting one glyph. */
@@ -44,6 +46,7 @@ public data class PaintGraphLimits(
         require(maxPalettes > 0) { "maxPalettes must be positive." }
         require(maxPaletteEntries > 0) { "maxPaletteEntries must be positive." }
         require(maxColorRecords > 0) { "maxColorRecords must be positive." }
+        require(maxDecodedPaletteBytes > 0) { "maxDecodedPaletteBytes must be positive." }
         require(maxBaseGlyphRecords > 0) { "maxBaseGlyphRecords must be positive." }
         require(maxLayerRecords > 0) { "maxLayerRecords must be positive." }
     }

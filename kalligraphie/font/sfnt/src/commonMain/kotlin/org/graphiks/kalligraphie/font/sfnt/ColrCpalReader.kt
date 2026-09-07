@@ -14,6 +14,8 @@ public data class ColrCpalV0Limits(
     public val maxPaletteEntries: Int,
     /** Maximum CPAL color records decoded from the source. */
     public val maxColorRecords: Int,
+    /** Maximum bytes retained by expanded CPAL palettes after source record sharing is resolved. */
+    public val maxDecodedPaletteBytes: Int = maxColorRecords.coerceAtMost(Int.MAX_VALUE / 4) * 4,
     /** Maximum COLR base-glyph records decoded from the source. */
     public val maxBaseGlyphRecords: Int,
     /** Maximum COLR layer records decoded from the source. */
@@ -23,6 +25,7 @@ public data class ColrCpalV0Limits(
         require(maxPalettes > 0) { "maxPalettes must be positive." }
         require(maxPaletteEntries > 0) { "maxPaletteEntries must be positive." }
         require(maxColorRecords > 0) { "maxColorRecords must be positive." }
+        require(maxDecodedPaletteBytes > 0) { "maxDecodedPaletteBytes must be positive." }
         require(maxBaseGlyphRecords > 0) { "maxBaseGlyphRecords must be positive." }
         require(maxLayerRecords > 0) { "maxLayerRecords must be positive." }
     }
@@ -34,6 +37,7 @@ public data class ColrCpalV0Limits(
             maxPalettes = 256,
             maxPaletteEntries = 4_096,
             maxColorRecords = 65_536,
+            maxDecodedPaletteBytes = 262_144,
             maxBaseGlyphRecords = 65_536,
             maxLayerRecords = 65_536,
         )
@@ -97,6 +101,22 @@ public class ColrCpalV0Data internal constructor(
  */
 public object ColrCpalReader {
     /**
+     * Returns whether both tables declare the only versions this reader implements.
+     *
+     * This inexpensive header check is suitable for publishing a face capability. Full structural
+     * validation, including all offsets and palette references, remains part of [read] and is
+     * performed before an asset is acquired.
+     */
+    public fun hasSupportedVersionZeroHeaders(
+        colrTable: ByteArray,
+        cpalTable: ByteArray,
+    ): Boolean =
+        colrTable.size >= COLR_V0_HEADER_LENGTH &&
+            cpalTable.size >= CPAL_V0_HEADER_LENGTH &&
+            readUInt16(colrTable, 0)?.toInt() == 0 &&
+            readUInt16(cpalTable, 0)?.toInt() == 0
+
+    /**
      * Parses one COLR/CPAL version 0 pair with [limits].
      *
      * @param colrTable exact bytes of the OpenType `COLR` table.
@@ -142,6 +162,12 @@ public object ColrCpalReader {
         limit(entryCount, limits.maxPaletteEntries, "CPAL palette entry limit exceeded.", "CPAL")?.let { return it }
         limit(paletteCount, limits.maxPalettes, "CPAL palette limit exceeded.", "CPAL")?.let { return it }
         limit(colorRecordCount, limits.maxColorRecords, "CPAL color-record limit exceeded.", "CPAL")?.let { return it }
+        val decodedPaletteBytes = paletteCount.toLong() * entryCount.toLong() * COLOR_RECORD_LENGTH
+        if (decodedPaletteBytes > limits.maxDecodedPaletteBytes.toLong()) {
+            return FontOperationResult.Failure(
+                FontError.ResourceLimitExceeded("CPAL decoded-palette byte limit exceeded.", FontDiagnosticLocation.Table("CPAL")),
+            )
+        }
 
         val paletteIndicesEnd = checkedRangeEnd(CPAL_V0_HEADER_LENGTH, paletteCount * 2, table.size)
             ?: return invalid("font.cpal.truncated", "CPAL palette indices are truncated.", "CPAL")

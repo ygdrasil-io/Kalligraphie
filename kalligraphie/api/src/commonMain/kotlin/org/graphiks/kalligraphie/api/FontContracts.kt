@@ -240,7 +240,25 @@ public data class FontRenderAssetKey(
     public val representationProfile: GlyphRepresentationProfile,
     /** Exact immutable catalogue generation through which this asset is reopenable. */
     public val generation: FontCatalogGeneration,
+    /**
+     * Full visual selection required to reopen a non-default render variant.
+     *
+     * A `null` value denotes the canonical default snapshot only when [variant] is the default.
+     * A non-default key without this context remains a valid identity but is not a universal
+     * locator: a resolver must reject its reopening rather than infer a palette or foreground
+     * color from an opaque key string. Provider-created non-default assets retain this snapshot.
+     */
+    public val variantSnapshot: FontRenderVariantSnapshot? = null,
 ) {
+    init {
+        require(variantSnapshot == null || variantSnapshot.key == variant) {
+            "Render-variant snapshot must match the asset variant key."
+        }
+        require(variant != FontRenderVariantKey.default || variantSnapshot == null) {
+            "The default render variant must not retain redundant snapshot context."
+        }
+    }
+
     /**
      * Outline profile enforced by this asset, or `null` when its selected representation is not
      * an outline. Callers must not substitute a different profile when this value is absent.

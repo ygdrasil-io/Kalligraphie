@@ -1,5 +1,6 @@
 package org.graphiks.kalligraphie.font.sfnt
 
+import org.graphiks.kalligraphie.api.FontError
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.GlyphColor
 import org.graphiks.kalligraphie.api.GlyphId
@@ -35,6 +36,34 @@ class ColrCpalReaderTest {
         val failure = assertIs<FontOperationResult.Failure>(result)
         assertEquals("font.colr.invalid-palette-index", failure.error.code)
     }
+
+    @Test
+    fun rejectsSharedCpalRecordsWhenPaletteExpansionExceedsTheDecodedPayloadBudget() {
+        val limits = ColrCpalV0Limits(
+            maxPalettes = 2,
+            maxPaletteEntries = 2,
+            maxColorRecords = 2,
+            maxBaseGlyphRecords = 1,
+            maxLayerRecords = 2,
+        )
+
+        val result = ColrCpalReader.read(
+            colrVersionZeroTable(),
+            cpalTableWithTwoPalettesSharingTwoRecords(),
+            limits = limits,
+        )
+
+        val failure = assertIs<FontOperationResult.Failure>(result)
+        assertIs<FontError.ResourceLimitExceeded>(failure.error)
+    }
+
+    @Test
+    fun reportsTruncatedCpalHeadersAsInvalidFontData() {
+        val result = ColrCpalReader.read(colrVersionZeroTable(), byteArrayOf(0, 0, 0))
+
+        val failure = assertIs<FontOperationResult.Failure>(result)
+        assertEquals("font.cpal.truncated", failure.error.code)
+    }
 }
 
 private fun cpalVersionZeroTable(): ByteArray = ByteArray(32).also { bytes ->
@@ -50,6 +79,11 @@ private fun cpalVersionZeroTable(): ByteArray = ByteArray(32).also { bytes ->
     bytes.writeBgra(20, red = 0, green = 255, blue = 0)
     bytes.writeBgra(24, red = 0, green = 0, blue = 255)
     bytes.writeBgra(28, red = 255, green = 255, blue = 0)
+}
+
+private fun cpalTableWithTwoPalettesSharingTwoRecords(): ByteArray = cpalVersionZeroTable().also { bytes ->
+    bytes.writeUInt16(6, 2)
+    bytes.writeUInt16(14, 0)
 }
 
 private fun colrVersionZeroTable(): ByteArray = ByteArray(28).also { bytes ->

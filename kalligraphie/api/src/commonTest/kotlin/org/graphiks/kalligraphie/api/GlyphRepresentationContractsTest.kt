@@ -86,6 +86,7 @@ class GlyphRepresentationContractsTest {
     @Test
     fun representationKeysKeepPaletteVariantsInSeparateCacheDomains() {
         val profile = outlineProfile()
+        val paletteVariant = FontRenderVariantSnapshot(cpalPaletteIndex = 1)
         val assetKey = FontRenderAssetKey(
             fontInstanceKey = instanceKey(),
             variant = FontRenderVariantKey.default,
@@ -100,9 +101,12 @@ class GlyphRepresentationContractsTest {
             profile = GlyphRepresentationProfileKey.outline(profile),
         )
         val paletteKey = GlyphRepresentationKey(
-            assetKey = assetKey.copy(variant = FontRenderVariantKey("cpal:1")),
+            assetKey = assetKey.copy(
+                variant = paletteVariant.key,
+                variantSnapshot = paletteVariant,
+            ),
             glyphId = GlyphId(12),
-            variant = FontRenderVariantKey("cpal:1"),
+            variant = paletteVariant.key,
             profile = GlyphRepresentationProfileKey.outline(profile),
         )
 

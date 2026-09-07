@@ -93,7 +93,7 @@ internal class TrueTypeFace(
         )
 }
 
-private data class TrueTypeFontInstance(
+internal data class TrueTypeFontInstance(
     override val key: FontInstanceKey,
     private val descriptor: FontInstanceDescriptor,
     private val resource: PreparedFontResource,
@@ -199,6 +199,7 @@ private data class TrueTypeFontInstance(
                                                 variant = renderVariant.key,
                                                 representationProfile = profile,
                                                 generation = resolver.generation,
+                                                variantSnapshot = renderVariant.takeUnless { it == FontRenderVariantSnapshot.default },
                                             ),
                                             profile = profile,
                                             colorData = colorData.value,
@@ -251,6 +252,7 @@ private data class TrueTypeFontInstance(
                 maxPalettes = profile.limits.maxPalettes,
                 maxPaletteEntries = profile.limits.maxPaletteEntries,
                 maxColorRecords = profile.limits.maxColorRecords,
+                maxDecodedPaletteBytes = profile.limits.maxDecodedPaletteBytes,
                 maxBaseGlyphRecords = profile.limits.maxBaseGlyphRecords,
                 maxLayerRecords = profile.limits.maxLayerRecords,
             ),

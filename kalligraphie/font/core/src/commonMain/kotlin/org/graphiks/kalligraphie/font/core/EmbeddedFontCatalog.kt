@@ -17,12 +17,16 @@ import org.graphiks.kalligraphie.api.FontProviderId
 import org.graphiks.kalligraphie.api.FontRenderAssetHandle
 import org.graphiks.kalligraphie.api.FontRenderAssetKey
 import org.graphiks.kalligraphie.api.FontRenderVariantKey
+import org.graphiks.kalligraphie.api.FontRenderVariantSnapshot
+import org.graphiks.kalligraphie.api.FontInstanceDescriptor
 import org.graphiks.kalligraphie.api.FontSource
 import org.graphiks.kalligraphie.api.FontSourceId
 import org.graphiks.kalligraphie.api.sortedDiagnostics
 import org.graphiks.kalligraphie.api.toDiagnostic
 import org.graphiks.kalligraphie.font.scaler.PreparedTrueTypeFont
+import org.graphiks.kalligraphie.font.sfnt.ColrCpalReader
 import org.graphiks.kalligraphie.font.sfnt.ParsedTrueTypeFont
+import org.graphiks.kalligraphie.font.sfnt.slice
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.concurrent.atomics.ExperimentalAtomicApi
 
@@ -44,6 +48,7 @@ public class EmbeddedFontCatalog(
 ) : FontCatalogSnapshot {
     private val resources: Map<FontFaceId, PreparedFontResource>
     private val parsedFonts: Map<FontFaceId, ParsedTrueTypeFont>
+    private val paintGraphSupportedFaces: Set<FontFaceId>
     private val resolvedFaces: Map<FontFaceId, TrueTypeFace>
 
     /** Stable records for every captured embedded face, in supplied order. */
@@ -65,6 +70,9 @@ public class EmbeddedFontCatalog(
             id to PreparedFontResource(PreparedTrueTypeFont(entry.source, entry.parsedFont))
         }
         parsedFonts = ids.zip(capturedEntries).associate { (id, entry) -> id to entry.parsedFont }
+        paintGraphSupportedFaces = ids.filter { id ->
+            supportsColrCpalV0(resources.getValue(id), parsedFonts.getValue(id))
+        }.toSet()
         resolvedFaces = ids.associateWith { id ->
             TrueTypeFace(
                 faceId = id,
@@ -81,8 +89,7 @@ public class EmbeddedFontCatalog(
                     characterMapping = true,
                     shaping = true,
                     outline = true,
-                    paintGraph = parsedFonts.getValue(id).tableRecords.containsKey("COLR") &&
-                        parsedFonts.getValue(id).tableRecords.containsKey("CPAL"),
+                    paintGraph = id in paintGraphSupportedFaces,
                 ),
             )
         }
@@ -102,7 +109,7 @@ public class EmbeddedFontCatalog(
 
     /** Opens a resolver backed by the embedded source. */
     override fun openAssetResolver(): FontOperationResult<FontAssetResolverHandle> =
-        FontOperationResult.Success(EmbeddedFontAssetResolver(generation, resources))
+        FontOperationResult.Success(EmbeddedFontAssetResolver(generation, resources, parsedFonts))
 
     /** Resolves a face when the requested access profile is supported. */
     override fun resolveFace(
@@ -117,7 +124,7 @@ public class EmbeddedFontCatalog(
                 ),
             )
         }
-        if (!requirements.isSupportedForEmbeddedTrueType(parsedFonts.getValue(faceId))) {
+        if (!requirements.isSupportedForEmbeddedTrueType(faceId)) {
             return failure(
                 FontError.UnsupportedRepresentationProfile(
                     message = "Unsupported font access requirements for this embedded TrueType catalog.",
@@ -136,7 +143,7 @@ public class EmbeddedFontCatalog(
         return FontOperationResult.Success(resolvedFaces.getValue(faceId))
     }
 
-    private fun FontAccessRequirementsSnapshot.isSupportedForEmbeddedTrueType(parsedFont: ParsedTrueTypeFont): Boolean =
+    private fun FontAccessRequirementsSnapshot.isSupportedForEmbeddedTrueType(faceId: FontFaceId): Boolean =
         when (mode) {
             FontAccessRequirementsSnapshot.Mode.LAYOUT_ONLY -> true
             FontAccessRequirementsSnapshot.Mode.RENDERABLE -> acceptedProfiles.firstOrNull().let { profile ->
@@ -144,12 +151,23 @@ public class EmbeddedFontCatalog(
                     is org.graphiks.kalligraphie.api.OutlineProfile -> profile.schemaVersion == 1
                     is org.graphiks.kalligraphie.api.PaintGraphProfile ->
                         profile.schemaVersion == 1 &&
-                            parsedFont.tableRecords.containsKey("COLR") &&
-                            parsedFont.tableRecords.containsKey("CPAL")
+                            faceId in paintGraphSupportedFaces
                     else -> false
                 }
             }
         }
+
+    private fun supportsColrCpalV0(
+        resource: PreparedFontResource,
+        parsedFont: ParsedTrueTypeFont,
+    ): Boolean {
+        val colrRecord = parsedFont.tableRecords["COLR"] ?: return false
+        val cpalRecord = parsedFont.tableRecords["CPAL"] ?: return false
+        val sourceBytes = resource.preparedFont.copySourceBytes()
+        val colr = slice(sourceBytes, colrRecord) ?: return false
+        val cpal = slice(sourceBytes, cpalRecord) ?: return false
+        return ColrCpalReader.hasSupportedVersionZeroHeaders(colr, cpal)
+    }
 
     private fun failure(error: FontError, diagnostics: List<FontDiagnostic> = listOf(error.toDiagnostic())): FontOperationResult.Failure =
         FontOperationResult.Failure(error, diagnostics.sortedDiagnostics())
@@ -172,6 +190,7 @@ public data class EmbeddedFontCatalogEntry(
 internal class EmbeddedFontAssetResolver(
     override val generation: FontCatalogGeneration,
     private val resources: Map<FontFaceId, PreparedFontResource>,
+    private val parsedFonts: Map<FontFaceId, ParsedTrueTypeFont>,
 ) : FontAssetResolverHandle {
     private val resourceLeases: MutableMap<FontFaceId, PreparedFontResourceLease> =
         resources.mapValues { (_, resource) -> resource.acquireLease() }.toMutableMap()
@@ -196,18 +215,26 @@ internal class EmbeddedFontAssetResolver(
         if (!isReopenableEmbeddedKey(key)) {
             return failure(FontError.AssetUnavailable("Asset key does not identify an embedded TrueType render asset in this catalog generation."))
         }
-        val lease = acquireAssetLease(key.fontInstanceKey.face)
-            ?: return if (lifecycle.isOpenForNewOperations()) {
-                failure(FontError.AssetUnavailable("The asset face is not available in this catalog generation."))
-            } else {
-                failure(FontError.ResourceClosed("Asset resolver is closed."))
-            }
-        return FontOperationResult.Success(
-            TrueTypeRenderAssetHandle(
-                faceId = key.fontInstanceKey.face,
-                resourceLease = lease,
-                key = key,
-            ),
+        val variant = key.variantSnapshot ?: FontRenderVariantSnapshot.default
+        if (variant.key != key.variant) {
+            return failure(FontError.AssetUnavailable("Render variant context does not match the requested asset key."))
+        }
+        val face = key.fontInstanceKey.face
+        val resource = resources[face]
+            ?: return failure(FontError.AssetUnavailable("The asset face is not available in this catalog generation."))
+        val parsedFont = parsedFonts[face]
+            ?: return failure(FontError.AssetUnavailable("The asset face metadata is not available in this catalog generation."))
+        return TrueTypeFontInstance(
+            key = key.fontInstanceKey,
+            descriptor = FontInstanceDescriptor(key.fontInstanceKey.layoutSize, key.fontInstanceKey.geometry),
+            resource = resource,
+            faceId = face,
+            generation = generation,
+            parsedFont = parsedFont,
+        ).acquireRenderAsset(
+            resolver = this,
+            renderVariant = variant,
+            requirements = FontAccessRequirementsSnapshot.renderable(listOf(key.representationProfile)),
         )
     }
 
@@ -223,8 +250,18 @@ internal class EmbeddedFontAssetResolver(
 
     private fun isReopenableEmbeddedKey(key: FontRenderAssetKey): Boolean {
         val instance = key.fontInstanceKey
-        return key.variant == FontRenderVariantKey.default &&
-            (key.representationProfile as? org.graphiks.kalligraphie.api.OutlineProfile)?.schemaVersion == 1 &&
+        val parsedFont = parsedFonts[instance.face] ?: return false
+        val representationIsSupported = when (val profile = key.representationProfile) {
+            is org.graphiks.kalligraphie.api.OutlineProfile ->
+                key.variant == FontRenderVariantKey.default &&
+                    profile.schemaVersion == 1 &&
+                    parsedFont.tableRecords.containsKey("glyf") && parsedFont.tableRecords.containsKey("loca")
+            is org.graphiks.kalligraphie.api.PaintGraphProfile ->
+                profile.schemaVersion == 1 &&
+                    parsedFont.tableRecords.containsKey("COLR") && parsedFont.tableRecords.containsKey("CPAL")
+            else -> false
+        }
+        return representationIsSupported &&
             instance.face in resources &&
             instance.interpretation.pipelineId == "org.graphiks.kalligraphie.true-type" &&
             instance.interpretation.version == "1" &&
