@@ -50,6 +50,30 @@ la fermeture produit le même résultat). Les nouvelles acquisitions après
 fermeture renvoient `font.resource-closed` ; une ressource détachée conserve les
 données immuables requises par `resolveGlyph(...)`.
 
+### Rétention bornée des représentations
+
+`FontMaterializationCachePolicy` peut conserver les résultats complets, immuables et portables
+des contours d’une face capturée dans un cache (mémoire temporaire). La politique est désactivée
+par défaut ; elle peut être passée à `Kalligraphie.embedded(...)` ou à
+`MacosSystemFontCatalogOptions`. Son budget en octets est uniquement une politique de coût : il
+ne modifie ni la sélection de route, ni une clé de représentation, un certificat, un diagnostic
+ou le résultat d’un glyphe. Les entrées sont limitées à une face et à une génération de provider
+(fournisseur), pondérées par les données de contour normalisées retenues, puis évincées selon
+LRU (least recently used, moins récemment utilisé). L’annulation et les erreurs opérationnelles
+ne sont jamais conservées ; un résultat plus grand que le budget est retourné normalement sans
+être conservé. Aucune entrée du cache ne retient de gestionnaire, de ressource de rendu, de
+catalogue ni de ressource native.
+
+```kotlin
+val cachePolicy = FontMaterializationCachePolicy(maxEvictableBytesPerFace = 4L * 1024L * 1024L)
+val catalogResult = Kalligraphie.embedded(bytes, provenance, cachePolicy)
+```
+
+Le cache est libéré après la fermeture du dernier gestionnaire ou de la dernière ressource de
+rendu utilisant cette face. Une ressource détachée conserve son lease (droit d’usage temporaire)
+ordinaire : le détachement ne modifie donc pas une opération déjà admise et n’expose pas une
+entrée de cache fermée.
+
 Sur macOS, l’artefact JVM expose aussi `MacosSystemFontCatalog.open()`. Il
 capture, sous limites, les fichiers `.ttf` réguliers dans un instantané
 portable et utilise les mêmes routes que les fontes embarquées. Il n’expose pas

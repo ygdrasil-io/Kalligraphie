@@ -12,6 +12,7 @@ import org.graphiks.kalligraphie.api.FontFace
 import org.graphiks.kalligraphie.api.FontFaceCapabilities
 import org.graphiks.kalligraphie.api.FontFaceId
 import org.graphiks.kalligraphie.api.FontFaceRecord
+import org.graphiks.kalligraphie.api.FontMaterializationCachePolicy
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontProviderId
 import org.graphiks.kalligraphie.api.FontRenderAssetHandle
@@ -21,6 +22,11 @@ import org.graphiks.kalligraphie.api.FontRenderVariantSnapshot
 import org.graphiks.kalligraphie.api.FontInstanceDescriptor
 import org.graphiks.kalligraphie.api.FontSource
 import org.graphiks.kalligraphie.api.FontSourceId
+import org.graphiks.kalligraphie.api.FontOperationResult.Success
+import org.graphiks.kalligraphie.api.GlyphOutlineCommand
+import org.graphiks.kalligraphie.api.GlyphOutlineIR
+import org.graphiks.kalligraphie.api.GlyphRepresentation
+import org.graphiks.kalligraphie.api.GlyphRepresentationKey
 import org.graphiks.kalligraphie.api.sortedDiagnostics
 import org.graphiks.kalligraphie.api.toDiagnostic
 import org.graphiks.kalligraphie.font.scaler.PreparedTrueTypeFont
@@ -43,10 +49,12 @@ import kotlin.concurrent.atomics.ExperimentalAtomicApi
  *
  * @param generation stable identifier for this immutable catalog generation.
  * @param entries captured source bytes, provenance, and parsed metadata for every face.
+ * @param cachePolicy bounded portable representation retention independently applied per face.
  */
 public class EmbeddedFontCatalog(
     override val generation: FontCatalogGeneration,
     entries: List<EmbeddedFontCatalogEntry>,
+    cachePolicy: FontMaterializationCachePolicy = FontMaterializationCachePolicy.disabled,
 ) : FontCatalogSnapshot {
     private val resources: Map<FontFaceId, PreparedFontResource>
     private val parsedFonts: Map<FontFaceId, ParsedTrueTypeFont>
@@ -72,7 +80,10 @@ public class EmbeddedFontCatalog(
             "An embedded font catalog must not contain the same source twice."
         }
         resources = ids.zip(capturedEntries).associate { (id, entry) ->
-            id to PreparedFontResource(PreparedTrueTypeFont(entry.source, entry.parsedFont))
+            id to PreparedFontResource(
+                preparedFont = PreparedTrueTypeFont(entry.source, entry.parsedFont),
+                cachePolicy = cachePolicy,
+            )
         }
         parsedFonts = ids.zip(capturedEntries).associate { (id, entry) -> id to entry.parsedFont }
         outlineRouteSupportedFaces = ids.filter { id ->
@@ -407,8 +418,21 @@ internal class FontHandleLifecycle(
 @OptIn(ExperimentalAtomicApi::class)
 internal class PreparedFontResource(
     internal val preparedFont: PreparedTrueTypeFont,
+    cachePolicy: FontMaterializationCachePolicy,
 ) {
     private val leaseCount = AtomicInt(0)
+    private val outlineRepresentations = WeightedEvictableCache<GlyphRepresentationKey, Success<GlyphRepresentation>>(
+        cachePolicy.maxEvictableBytesPerFace,
+    )
+
+    internal fun cachedOutline(key: GlyphRepresentationKey): Success<GlyphRepresentation>? = outlineRepresentations.get(key)
+
+    internal fun cacheOutline(
+        key: GlyphRepresentationKey,
+        result: Success<GlyphRepresentation>,
+    ) {
+        outlineRepresentations.put(key, result, result.estimatedRetainedBytes())
+    }
 
     internal fun acquireLease(): PreparedFontResourceLease {
         while (true) {
@@ -424,10 +448,54 @@ internal class PreparedFontResource(
         while (true) {
             val current = leaseCount.load()
             check(current > 0) { "Prepared font resource lease released more than once." }
-            if (leaseCount.compareAndSet(current, current - 1)) return
+            if (leaseCount.compareAndSet(current, current - 1)) {
+                if (current == 1) outlineRepresentations.clear()
+                return
+            }
         }
     }
 }
+
+private fun Success<GlyphRepresentation>.estimatedRetainedBytes(): Long =
+    value.estimatedRetainedBytes().saturatingAdd(diagnostics.estimatedRetainedBytes())
+
+private fun GlyphRepresentation.estimatedRetainedBytes(): Long = when (this) {
+    GlyphRepresentation.Empty -> 1L
+    is GlyphRepresentation.Outline -> outline.estimatedRetainedBytes()
+    is GlyphRepresentation.Paint,
+    is GlyphRepresentation.Bitmap,
+    -> 1L
+}
+
+private fun GlyphOutlineIR.estimatedRetainedBytes(): Long {
+    var total = 96L
+    for (contour in contours) {
+        total = total.saturatingAdd(24L)
+        for (command in contour.commands) {
+            total = total.saturatingAdd(
+                when (command) {
+                    is GlyphOutlineCommand.MoveTo,
+                    is GlyphOutlineCommand.LineTo,
+                    -> 32L
+
+                    is GlyphOutlineCommand.QuadraticTo -> 48L
+                    GlyphOutlineCommand.Close -> 16L
+                },
+            )
+        }
+    }
+    for (component in components) total = total.saturatingAdd(64L)
+    return total
+}
+
+private fun List<FontDiagnostic>.estimatedRetainedBytes(): Long = fold(0L) { total, diagnostic ->
+    total.saturatingAdd(64L)
+        .saturatingAdd(diagnostic.code.length.toLong() * 2L)
+        .saturatingAdd(diagnostic.message.length.toLong() * 2L)
+}
+
+private fun Long.saturatingAdd(other: Long): Long =
+    if (other > Long.MAX_VALUE - this) Long.MAX_VALUE else this + other
 
 @OptIn(ExperimentalAtomicApi::class)
 internal class PreparedFontResourceLease(

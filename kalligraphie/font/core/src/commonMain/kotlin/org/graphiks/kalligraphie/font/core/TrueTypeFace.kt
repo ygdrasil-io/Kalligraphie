@@ -29,6 +29,8 @@ import org.graphiks.kalligraphie.api.GlyphPaintNode
 import org.graphiks.kalligraphie.api.PaintGraphProfile
 import org.graphiks.kalligraphie.api.BitmapProfile
 import org.graphiks.kalligraphie.api.GlyphRepresentation
+import org.graphiks.kalligraphie.api.GlyphRepresentationKey
+import org.graphiks.kalligraphie.api.GlyphRepresentationProfileKey
 import org.graphiks.kalligraphie.api.GlyphResolution
 import org.graphiks.kalligraphie.api.sortedDiagnostics
 import org.graphiks.kalligraphie.api.toDiagnostic
@@ -440,7 +442,17 @@ internal class TrueTypeRenderAssetHandle(
             }
             val preparedFont = resourceLease?.preparedFont
                 ?: return failure(FontError.ResourceClosed("Render asset is closed."))
-            val outline = when (val result = preparedFont.readGlyphOutline(GlyphId(request.glyphId), profile, cancellationToken)) {
+            val resource = resourceLease?.resource
+                ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+            val glyphId = GlyphId(request.glyphId)
+            val representationKey = GlyphRepresentationKey(
+                assetKey = key,
+                glyphId = glyphId,
+                variant = key.variant,
+                profile = GlyphRepresentationProfileKey.outline(profile),
+            )
+            resource.cachedOutline(representationKey)?.let { cached -> return cached }
+            val outline = when (val result = preparedFont.readGlyphOutline(glyphId, profile, cancellationToken)) {
                 is FontOperationResult.Success -> result.value
                 is FontOperationResult.Failure -> return result
                 is FontOperationResult.Cancelled -> return result
@@ -448,7 +460,15 @@ internal class TrueTypeRenderAssetHandle(
             if (cancellationToken.isCancellationRequested()) {
                 return FontOperationResult.Cancelled()
             }
-            OutlineMaterializer.materialize(outline, profile, cancellationToken)
+            when (val materialized = OutlineMaterializer.materialize(outline, profile, cancellationToken)) {
+                is FontOperationResult.Success -> {
+                    if (cancellationToken.isCancellationRequested()) FontOperationResult.Cancelled()
+                    else materialized.also { success -> resource.cacheOutline(representationKey, success) }
+                }
+
+                is FontOperationResult.Failure -> materialized
+                is FontOperationResult.Cancelled -> materialized
+            }
         } finally {
             lease.release()
         }

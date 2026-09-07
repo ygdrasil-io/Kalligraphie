@@ -45,6 +45,26 @@ resolver or render asset is idempotent. New acquisitions after closure return
 `font.resource-closed`; a detached asset owns the immutable data required for
 `resolveGlyph(...)`.
 
+### Bounded representation retention
+
+`FontMaterializationCachePolicy` optionally retains complete immutable portable outline results
+for one captured face. The policy is disabled by default and can be passed to
+`Kalligraphie.embedded(...)` or `MacosSystemFontCatalogOptions`. Its byte budget is a cost policy
+only: it neither changes route selection nor any representation key, certificate, diagnostic, or
+glyph result. Entries are scoped to one provider generation and face, weighted by retained
+normalized outline data, and evicted least-recently-used first. Cancellation and operational
+errors are never retained; a result larger than the budget is returned normally without being
+retained. No cache entry holds a resolver, render asset, catalog, or native resource.
+
+```kotlin
+val cachePolicy = FontMaterializationCachePolicy(maxEvictableBytesPerFace = 4L * 1024L * 1024L)
+val catalogResult = Kalligraphie.embedded(bytes, provenance, cachePolicy)
+```
+
+The cache is released after the last resolver or render asset using that face closes. Detached
+assets keep their ordinary resource lease, so detaching does not change an already-admitted
+operation or expose a closed cache entry.
+
 On macOS, the JVM artifact also exposes `MacosSystemFontCatalog.open()`. It
 captures bounded, regular `.ttf` files into a portable snapshot and uses the
 same routes as embedded fonts. It does not expose CoreText handles, nor claim
