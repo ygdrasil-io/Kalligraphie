@@ -169,6 +169,26 @@ class GlyphRepresentationContractsTest {
     }
 
     @Test
+    fun paintCertificateCannotBeReusedWithAnOutlineProfile() {
+        val generation = FontCatalogGeneration(FontProviderId("embedded"), "generation-1")
+        val paintProfile = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE),
+            acceptedCompositionModes = emptyList(),
+            limits = PaintGraphLimits(maxNodes = 1, maxReferences = 0, maxDepth = 1),
+            outlineProfile = outlineProfile(),
+        )
+        val paintAsset = FontRenderAssetKey(instanceKey(), FontRenderVariantKey.default, paintProfile, generation)
+        val outlineAsset = FontRenderAssetKey(instanceKey(), FontRenderVariantKey.default, outlineProfile(), generation)
+        val certificate = GlyphMaterializationCertificate(
+            assetKey = paintAsset,
+            glyphId = GlyphId(12),
+            route = GlyphMaterializationRoute.PAINT_GRAPH,
+        )
+
+        assertFalse(certificate.matches(outlineAsset, GlyphId(12)))
+    }
+
+    @Test
     fun generationsWithTheSameTokenRemainDistinctAcrossProviderDomains() {
         val left = FontCatalogGeneration(FontProviderId("provider-a"), "generation-7")
         val right = FontCatalogGeneration(FontProviderId("provider-b"), "generation-7")
