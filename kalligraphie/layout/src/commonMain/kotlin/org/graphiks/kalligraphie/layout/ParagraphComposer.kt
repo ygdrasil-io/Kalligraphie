@@ -1954,10 +1954,10 @@ public object ParagraphComposer : ParagraphLayouter {
         BaseDirection.RIGHT_TO_LEFT -> ShapingDirection.RIGHT_TO_LEFT
     }
 
-    private fun EditableLineMaterialization.identity(): ParagraphMaterializationIdentity = when (this) {
-        EditableLineMaterialization.LayoutOnly -> ParagraphMaterializationIdentity.LayoutOnly
-        is EditableLineMaterialization.Renderable -> ParagraphMaterializationIdentity.Renderable(variant, outlineProfile)
-    }
+private fun EditableLineMaterialization.identity(): ParagraphMaterializationIdentity = when (this) {
+    EditableLineMaterialization.LayoutOnly -> ParagraphMaterializationIdentity.LayoutOnly
+    is EditableLineMaterialization.Renderable -> ParagraphMaterializationIdentity.Renderable(renderVariant, requirements)
+}
 
     private fun bidiClass(scalar: Int): L1BidiClass = when (scalar) {
         0x000A, 0x000D, in 0x001C..0x001E, 0x0085, 0x2029 -> L1BidiClass.B

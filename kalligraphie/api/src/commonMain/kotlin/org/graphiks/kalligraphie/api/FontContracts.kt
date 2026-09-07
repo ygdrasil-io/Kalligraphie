@@ -115,12 +115,35 @@ public class FontAccessRequirementsSnapshot private constructor(
         }
     }
 
+    /**
+     * Compares the complete immutable requirement value rather than its allocation identity.
+     *
+     * This lets continuation and cache identities distinguish a changed ordered profile set,
+     * while independently reconstructed equal requirements remain replay-compatible.
+     */
+    override fun equals(other: Any?): Boolean =
+        other is FontAccessRequirementsSnapshot &&
+            mode == other.mode &&
+            acceptedProfiles == other.acceptedProfiles &&
+            portableDataRequired == other.portableDataRequired
+
+    /** Hash code for the complete immutable requirement value. */
+    override fun hashCode(): Int {
+        var result = mode.hashCode()
+        result = 31 * result + acceptedProfiles.hashCode()
+        return 31 * result + portableDataRequired.hashCode()
+    }
+
+    /** Human-readable complete immutable requirement value. */
+    override fun toString(): String =
+        "FontAccessRequirementsSnapshot(mode=$mode, acceptedProfiles=$acceptedProfiles, portableDataRequired=$portableDataRequired)"
+
     /** Supported levels of font access. */
     public enum class Mode {
         /** Metrics and glyph mapping only. */
         LAYOUT_ONLY,
 
-        /** Metrics, glyph mapping, and outlines. */
+        /** Metrics, glyph mapping, and one selected certified glyph representation route. */
         RENDERABLE,
     }
 

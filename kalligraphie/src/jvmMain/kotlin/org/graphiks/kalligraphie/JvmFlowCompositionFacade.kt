@@ -38,7 +38,7 @@ public class JvmFlowCompositionRequest(
     public val baseDirection: BaseDirection,
     /** Explicit BCP 47 language used by Unicode analysis and shaping. */
     public val language: String,
-    /** Layout-only or synchronously outline-certified publication mode. */
+    /** Layout-only or synchronously profile-certified publication mode. */
     public val materialization: EditableLineMaterialization = EditableLineMaterialization.LayoutOnly,
     /** Flow composition requires source-preserving continuation overflow. */
     public val overflowPolicy: OverflowPolicy = OverflowPolicy.Continue,

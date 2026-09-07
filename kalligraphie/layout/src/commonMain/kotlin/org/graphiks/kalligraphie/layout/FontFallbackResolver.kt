@@ -18,11 +18,12 @@ import org.graphiks.kalligraphie.api.FontInstance
 import org.graphiks.kalligraphie.api.FontInstanceDescriptor
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontResolutionPolicySnapshot
+import org.graphiks.kalligraphie.api.FontRenderVariantSnapshot
+import org.graphiks.kalligraphie.api.GlyphRepresentationProfile
 import org.graphiks.kalligraphie.api.GlyphRepresentation
 import org.graphiks.kalligraphie.api.MultiFontEditableLineRequest
 import org.graphiks.kalligraphie.api.OpenTypeFeature
 import org.graphiks.kalligraphie.api.OpenTypeScript
-import org.graphiks.kalligraphie.api.OutlineProfile
 import org.graphiks.kalligraphie.api.ParagraphLayoutRequest
 import org.graphiks.kalligraphie.api.ShaperCluster
 import org.graphiks.kalligraphie.api.ShaperClusterToken
@@ -161,7 +162,7 @@ internal object FontFallbackResolver {
             }
 
             rejectedGroup.forEach { assigned ->
-                blacklist += RejectedCandidate(assigned.unit.range, assigned.record.id, requirements.outlineProfile)
+                blacklist += RejectedCandidate(assigned.unit.range, assigned.record.id, requirements)
                 diagnostics += rejectedCandidateDiagnostic(
                     assigned.record.id,
                     "Shaping or final glyph materialization rejected the complete fallback unit.",
@@ -212,7 +213,7 @@ internal object FontFallbackResolver {
                 return CandidateSelection.Cancelled(emptyList())
             }
             val record = records.getValue(candidate.faceId)
-            val rejected = RejectedCandidate(unit.range, record.id, requirements.outlineProfile)
+            val rejected = RejectedCandidate(unit.range, record.id, requirements)
             if (rejected in blacklist || !supports(record.capabilities, requirements)) return@forEach
             val instance = instances[record.id] ?: run {
                 val face = when (val resolved = catalog.resolveFace(record.id, requirements)) {
@@ -328,7 +329,7 @@ internal object FontFallbackResolver {
             }
             val materialization = request.materialization
             if (materialization is EditableLineMaterialization.Renderable) {
-                when (val validation = validateOutlines(fragmentRun, first.instance, materialization, request)) {
+                when (val validation = validateMaterialization(fragmentRun, first.instance, materialization, request)) {
                     Validation.Valid -> Unit
                     is Validation.Rejected -> return Attempt.Rejected(validation.diagnostics)
                     is Validation.Cancelled -> return Attempt.Cancelled(validation.diagnostics)
@@ -417,18 +418,14 @@ internal object FontFallbackResolver {
     private fun graphemeFragments(range: TextRange, graphemes: List<TextRange>): List<TextRange> =
         graphemes.mapNotNull { grapheme -> intersection(range, grapheme) }
 
-    private fun validateOutlines(
+    private fun validateMaterialization(
         shaped: ShapedGlyphRun,
         instance: FontInstance,
         materialization: EditableLineMaterialization.Renderable,
         request: ResolutionRequest,
     ): Validation {
         val asset = when (
-            val acquired = instance.acquireRenderAsset(
-                resolver = materialization.resolver,
-                variant = materialization.variant,
-                requirements = FontAccessRequirementsSnapshot.renderable(materialization.outlineProfile),
-            )
+            val acquired = instance.acquireMaterializationAsset(materialization)
         ) {
             is FontOperationResult.Success -> acquired.value
             is FontOperationResult.Failure -> return Validation.Rejected(acquired.diagnostics + acquired.error.toDiagnostic())
@@ -436,21 +433,38 @@ internal object FontFallbackResolver {
         }
         var validation: Validation = Validation.Valid
         try {
-            if (asset.key.fontInstanceKey != instance.key || asset.key.generation != materialization.resolver.generation) {
-                validation = Validation.Rejected(listOf(rejectionDiagnostic("Acquired render asset does not identify the shaped instance and generation.")))
+            val variantSnapshot = asset.key.variantSnapshot ?: FontRenderVariantSnapshot.default
+            if (
+                asset.key.fontInstanceKey != instance.key ||
+                asset.key.generation != materialization.resolver.generation ||
+                asset.key.variant != materialization.renderVariant.key ||
+                variantSnapshot != materialization.renderVariant ||
+                asset.key.representationProfile !in materialization.requirements.acceptedProfiles
+            ) {
+                validation = Validation.Rejected(
+                    listOf(rejectionDiagnostic("Acquired render asset does not identify the shaped instance, visual variant, accepted profile, and generation.")),
+                )
             } else {
                 shaped.glyphs.forEach { glyph ->
                     if (validation != Validation.Valid) return@forEach
                     when (val resolved = asset.resolveGlyph(FontGlyphRequest(glyph.glyphId), request.cancellationToken)) {
                         is FontOperationResult.Success -> when (val representation = resolved.value) {
                             GlyphRepresentation.Empty -> Unit
-                            is GlyphRepresentation.Outline -> if (representation.outline.glyphId != glyph.glyphId.value) {
-                                validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved outline does not match the final shaped glyph identifier.")))
+                            is GlyphRepresentation.Outline -> if (
+                                asset.key.representationProfile !is org.graphiks.kalligraphie.api.OutlineProfile ||
+                                representation.outline.glyphId != glyph.glyphId.value
+                            ) {
+                                validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved outline does not match the certified profile and final shaped glyph identifier.")))
                             }
-                            is GlyphRepresentation.Paint,
-                            is GlyphRepresentation.Bitmap -> validation = Validation.Rejected(
-                                listOf(rejectionDiagnostic("An outline-only fallback validation asset returned a non-outline representation.")),
-                            )
+                            is GlyphRepresentation.Paint -> if (asset.key.representationProfile !is org.graphiks.kalligraphie.api.PaintGraphProfile) {
+                                validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved paint graph does not match the certified paint profile.")))
+                            }
+                            is GlyphRepresentation.Bitmap -> if (
+                                asset.key.representationProfile !is org.graphiks.kalligraphie.api.BitmapProfile ||
+                                representation.bitmap.glyphId != glyph.glyphId
+                            ) {
+                                validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved bitmap does not match the certified bitmap profile and final shaped glyph identifier.")))
+                            }
                         }
 
                         is FontOperationResult.Failure -> validation = Validation.Rejected(
@@ -510,12 +524,37 @@ internal object FontFallbackResolver {
 
     private fun supports(capabilities: FontFaceCapabilities, requirements: FontAccessRequirementsSnapshot): Boolean =
         capabilities.characterMapping && capabilities.shaping &&
-            (requirements.mode != FontAccessRequirementsSnapshot.Mode.RENDERABLE || capabilities.outline)
+            (requirements.mode != FontAccessRequirementsSnapshot.Mode.RENDERABLE ||
+                requirements.acceptedProfiles.any { profile -> capabilities.supportsRepresentation(profile) })
+
+    private fun FontFaceCapabilities.supportsRepresentation(profile: GlyphRepresentationProfile): Boolean = when (profile) {
+        is org.graphiks.kalligraphie.api.OutlineProfile -> outline
+        is org.graphiks.kalligraphie.api.PaintGraphProfile -> paintGraph
+        is org.graphiks.kalligraphie.api.BitmapProfile -> bitmap
+        is org.graphiks.kalligraphie.api.NativeHandleProfile -> nativeHandle
+    }
 
     private fun requirementsFor(materialization: EditableLineMaterialization): FontAccessRequirementsSnapshot = when (materialization) {
         EditableLineMaterialization.LayoutOnly -> FontAccessRequirementsSnapshot.layoutOnly()
-        is EditableLineMaterialization.Renderable -> FontAccessRequirementsSnapshot.renderable(materialization.outlineProfile)
+        is EditableLineMaterialization.Renderable -> materialization.requirements
     }
+
+    private fun FontInstance.acquireMaterializationAsset(
+        materialization: EditableLineMaterialization.Renderable,
+    ): FontOperationResult<org.graphiks.kalligraphie.api.FontRenderAssetHandle> =
+        if (materialization.renderVariant == FontRenderVariantSnapshot.default) {
+            acquireRenderAsset(
+                resolver = materialization.resolver,
+                variant = materialization.variant,
+                requirements = materialization.requirements,
+            )
+        } else {
+            acquireRenderAsset(
+                resolver = materialization.resolver,
+                renderVariant = materialization.renderVariant,
+                requirements = materialization.requirements,
+            )
+        }
 
     private fun unresolved(
         unit: FallbackUnit,
@@ -584,7 +623,7 @@ internal object FontFallbackResolver {
     private data class RejectedCandidate(
         val range: TextRange,
         val faceId: FontFaceId,
-        val profile: OutlineProfile?,
+        val requirements: FontAccessRequirementsSnapshot,
     )
 
     private data class GroupSignature(

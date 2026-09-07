@@ -73,7 +73,7 @@ public object FlowParagraphComposer : FlowParagraphLayouter {
      * their own concurrency contracts.
      *
      * @param request complete Unicode, line-break, font, shaping, and positioning inputs.
-     * @param materialization requested layout-only or outline-certified publication capability.
+     * @param materialization requested layout-only or profile-certified publication capability.
      * @param region application-owned geometry provider queried for the line band.
      * @param blockStart finite non-negative logical block-axis offset at which placement begins.
      * @return one final [ParagraphFragment] on success, otherwise a typed composition failure.
@@ -132,7 +132,7 @@ public object FlowParagraphComposer : FlowParagraphLayouter {
      * capabilities satisfy their own concurrency contracts.
      *
      * @param request prepared paragraph request whose source range is the exact suffix to compose.
-     * @param materialization requested layout-only or outline-certified publication capability.
+     * @param materialization requested layout-only or profile-certified publication capability.
      * @param chain ordered application-owned flow regions and fragmentation constraints.
      * @param inputIdentity exact text and typography revisions used to prepare [request].
      * @param continuation structured replay state for [request], or `null` for initial composition.
