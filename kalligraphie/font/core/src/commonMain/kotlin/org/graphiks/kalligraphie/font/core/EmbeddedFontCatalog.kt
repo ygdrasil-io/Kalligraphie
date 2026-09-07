@@ -181,7 +181,7 @@ private fun supportsColrCpalV0(
 }
 
 /**
- * One audited OpenType source included in an [EmbeddedFontCatalog].
+ * One captured OpenType source included in an [EmbeddedFontCatalog].
  *
  * The provider captures both values while creating its immutable generation. The source owns a
  * defensive copy of its bytes and parsed metadata is immutable; callers retain no provider
