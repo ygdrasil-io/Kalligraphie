@@ -266,7 +266,7 @@ public enum class GlyphMaterializationRoute {
  * constructor is not a cryptographic authenticity mechanism for manually constructed values.
  */
 public data class GlyphMaterializationCertificate(
-    /** Exact font instance, variant, and outline profile used for validation. */
+    /** Exact font instance, variant, and representation profile used for validation. */
     public val assetKey: FontRenderAssetKey,
     /** Final glyph identifier whose route was validated. */
     public val glyphId: GlyphId,

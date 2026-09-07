@@ -296,12 +296,23 @@ class GlyphRepresentationContractsTest {
         )
 
         assertEquals(
-            "nodes=SOLID_OUTLINE,GROUP;composition=SOURCE_OVER;limits=3,2,2,10,1,0,2,3,4,5,6,7;outline=1024,32,128,8,32",
+            "nodes=SOLID_OUTLINE,GROUP;composition=SOURCE_OVER;limits=3,2,2,10,1,0,2,3,4,5,6,7;outline=1,1024,32,128,8,32",
             GlyphRepresentationProfileKey.paintGraph(paint).parameters,
         )
         assertEquals(
             "strike=16,17;pixels=ALPHA_8;colors=SRGB;limits=1,2,3,4,5,6",
             GlyphRepresentationProfileKey.bitmap(bitmap).parameters,
+        )
+        val changedOutlineSchema = PaintGraphProfile(
+            acceptedNodeKinds = paint.acceptedNodeKinds,
+            acceptedCompositionModes = paint.acceptedCompositionModes,
+            limits = paint.limits,
+            outlineProfile = paint.outlineProfile.copy(schemaVersion = 2),
+        )
+
+        assertNotEquals(
+            GlyphRepresentationProfileKey.paintGraph(paint),
+            GlyphRepresentationProfileKey.paintGraph(changedOutlineSchema),
         )
     }
 

@@ -53,7 +53,7 @@ public data class GlyphRepresentationProfileKey(
                     "nodes=${profile.acceptedNodeKinds.joinToString(",")}",
                     "composition=${profile.acceptedCompositionModes.joinToString(",")}",
                     "limits=${profile.limits.canonicalPaintLimits()}",
-                    "outline=${profile.outlineProfile.canonicalOutlineLimits(",")}",
+                    "outline=${profile.outlineProfile.schemaVersion},${profile.outlineProfile.canonicalOutlineLimits(",")}",
                 ).joinToString(";"),
             )
 
