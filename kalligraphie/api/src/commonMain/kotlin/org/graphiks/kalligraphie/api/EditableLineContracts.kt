@@ -263,7 +263,19 @@ public data class GlyphMaterializationCertificate(
     public val glyphId: GlyphId,
     /** Successfully validated route. */
     public val route: GlyphMaterializationRoute,
-)
+) {
+    /**
+     * Returns whether this certificate still covers [candidateGlyphId] from [candidateAssetKey].
+     *
+     * Equality is exact: the asset key includes the font instance, render variant, profile, and
+     * catalog generation. Callers must recertify rather than reuse this value after any of those
+     * inputs changes.
+     */
+    public fun matches(
+        candidateAssetKey: FontRenderAssetKey,
+        candidateGlyphId: GlyphId,
+    ): Boolean = assetKey == candidateAssetKey && glyphId == candidateGlyphId
+}
 
 /**
  * Final placement of one shaped glyph with direct source-cluster relationships.

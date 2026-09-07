@@ -90,9 +90,31 @@ public data class FontFaceMetadata(
 public class FontAccessRequirementsSnapshot private constructor(
     /** Requested access mode. */
     public val mode: Mode,
-    /** Outline representation constraints, when rendering is requested. */
-    public val outlineProfile: OutlineProfile?,
+    acceptedProfiles: List<GlyphRepresentationProfile>,
+    /** Whether a native-only route is forbidden for this request. */
+    public val portableDataRequired: Boolean,
 ) {
+    /** Ordered immutable profiles a consumer can materialize. */
+    public val acceptedProfiles: List<GlyphRepresentationProfile> = acceptedProfiles.immutableListSnapshot()
+
+    /** First accepted outline profile, retained for compatibility with outline-only consumers. */
+    public val outlineProfile: OutlineProfile? = this.acceptedProfiles.filterIsInstance<OutlineProfile>().firstOrNull()
+
+    init {
+        when (mode) {
+            Mode.LAYOUT_ONLY -> require(this.acceptedProfiles.isEmpty()) {
+                "LAYOUT_ONLY requirements must not accept a render profile."
+            }
+
+            Mode.RENDERABLE -> require(this.acceptedProfiles.isNotEmpty()) {
+                "RENDERABLE requirements must accept at least one render profile."
+            }
+        }
+        require(!portableDataRequired || this.acceptedProfiles.any { it !is NativeHandleProfile }) {
+            "portableDataRequired cannot be satisfied by native-only profiles."
+        }
+    }
+
     /** Supported levels of font access. */
     public enum class Mode {
         /** Metrics and glyph mapping only. */
@@ -106,18 +128,64 @@ public class FontAccessRequirementsSnapshot private constructor(
     public companion object {
         /** Creates requirements for layout-only access. */
         public fun layoutOnly(): FontAccessRequirementsSnapshot =
-            FontAccessRequirementsSnapshot(Mode.LAYOUT_ONLY, null)
+            FontAccessRequirementsSnapshot(Mode.LAYOUT_ONLY, emptyList(), false)
 
         /** Creates requirements for bounded outline access. */
         public fun renderable(outlineProfile: OutlineProfile): FontAccessRequirementsSnapshot =
-            FontAccessRequirementsSnapshot(Mode.RENDERABLE, outlineProfile)
+            renderable(listOf(outlineProfile))
+
+        /**
+         * Creates requirements for explicitly ordered render profiles.
+         *
+         * The order expresses consumer preference only. It never authorizes a less faithful
+         * profile merely because an operation is cancelled or takes longer than expected.
+         */
+        public fun renderable(
+            acceptedProfiles: List<GlyphRepresentationProfile>,
+            portableDataRequired: Boolean = false,
+        ): FontAccessRequirementsSnapshot =
+            FontAccessRequirementsSnapshot(Mode.RENDERABLE, acceptedProfiles, portableDataRequired)
+    }
+}
+
+/**
+ * One versioned glyph-materialization profile accepted by a consumer.
+ *
+ * Implementations are immutable value snapshots. A provider may select only a profile declared
+ * in [FontAccessRequirementsSnapshot.acceptedProfiles], and must reject a route that exceeds its
+ * associated limits before publishing a certificate.
+ */
+public sealed interface GlyphRepresentationProfile {
+    /** Version of the representation schema understood by the consumer. */
+    public val schemaVersion: Int
+}
+
+/**
+ * Explicit permission to borrow one platform-native materialization route.
+ *
+ * This profile carries only stable bridge metadata; it never exposes a platform object from the
+ * common API. It is incompatible with [FontAccessRequirementsSnapshot.portableDataRequired]
+ * when it is the only accepted profile.
+ */
+public data class NativeHandleProfile(
+    /** Stable kind of the platform bridge, such as a platform-font bridge. */
+    public val bridgeKind: String,
+    /** Version of the platform bridge contract. */
+    public val bridgeVersion: String,
+    /** Version of the common native-route schema. */
+    override val schemaVersion: Int = 1,
+) : GlyphRepresentationProfile {
+    init {
+        require(bridgeKind.isNotBlank()) { "bridgeKind must not be blank." }
+        require(bridgeVersion.isNotBlank()) { "bridgeVersion must not be blank." }
+        require(schemaVersion > 0) { "schemaVersion must be positive." }
     }
 }
 
 /** Resource and geometry limits applied while materializing outlines. */
 public data class OutlineProfile(
     /** Version of the outline representation contract. */
-    public val schemaVersion: Int = 1,
+    public override val schemaVersion: Int = 1,
     /** Maximum number of bytes that may be materialized. */
     public val maxBytes: Int,
     /** Maximum number of contours in one outline. */
@@ -128,7 +196,7 @@ public data class OutlineProfile(
     public val maxCompositeDepth: Int,
     /** Maximum number of composite components in one outline. */
     public val maxCompositeComponents: Int,
-) {
+) : GlyphRepresentationProfile {
     init {
         require(schemaVersion > 0) { "schemaVersion must be positive." }
         require(maxBytes > 0) { "maxBytes must be positive." }
@@ -481,6 +549,12 @@ public sealed interface GlyphRepresentation {
     public data class Outline(
         /** Materialized outline intermediate representation. */
         public val outline: GlyphOutlineIR,
+    ) : GlyphRepresentation
+
+    /** Represents a glyph with decoded portable bitmap pixels. */
+    public data class Bitmap(
+        /** Materialized bitmap intermediate representation. */
+        public val bitmap: BitmapGlyphIR,
     ) : GlyphRepresentation
 }
 

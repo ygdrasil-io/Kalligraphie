@@ -1,24 +1,50 @@
 package org.graphiks.kalligraphie.api
 
-import kotlin.jvm.JvmInline
+/**
+ * Stable identity of a font provider domain.
+ *
+ * Tokens issued by different domains are never comparable, even when their textual values are
+ * identical. The value is an opaque namespace and has no ordering semantics.
+ */
+public data class FontProviderId(
+    /** Non-empty opaque provider namespace. */
+    public val value: String,
+) {
+    init {
+        require(value.isNotBlank()) { "Font provider identifier must not be blank." }
+    }
+
+    /** Compatibility namespace for catalogues created by older single-token providers. */
+    public companion object {
+        /** Shared domain used only by the legacy one-argument generation constructor. */
+        public val legacy: FontProviderId = FontProviderId("legacy")
+    }
+}
 
 /**
- * Opaque identity of an immutable catalogue generation.
+ * Opaque identity of an immutable catalogue generation in one provider domain.
  *
  * A generation identifies the exact set of face records and provider state captured by a
- * [FontCatalogSnapshot]. It is equality-comparable but intentionally has no ordering. Asset
- * keys may be reopened only through a live resolver carrying the same generation.
- *
- * @param value provider-defined, non-empty generation token.
+ * [FontCatalogSnapshot]. It is equality-comparable but intentionally unordered. Asset keys may
+ * be reopened only through a live resolver carrying the same [provider] and [value].
  */
-@JvmInline
-public value class FontCatalogGeneration(
-    /** Provider-defined generation token. */
+public data class FontCatalogGeneration(
+    /** Provider domain that issued this generation token. */
+    public val provider: FontProviderId,
+    /** Provider-defined, non-empty generation token. */
     public val value: String,
 ) {
     init {
         require(value.isNotBlank()) { "Font catalog generation must not be blank." }
     }
+
+    /**
+     * Creates a generation in the compatibility provider domain.
+     *
+     * New providers must use the two-argument constructor so independent token spaces cannot
+     * collide.
+     */
+    public constructor(value: String) : this(FontProviderId.legacy, value)
 }
 
 /**
