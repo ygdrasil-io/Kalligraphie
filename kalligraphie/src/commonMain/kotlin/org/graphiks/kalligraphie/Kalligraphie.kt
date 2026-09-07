@@ -97,42 +97,51 @@ public object Kalligraphie {
      */
     public fun embedded(sources: List<FontSource>): FontOperationResult<FontCatalogSnapshot> {
         val capturedSources = sources.toList()
-        if (capturedSources.isEmpty()) {
-            return embeddedCatalogFailure("An embedded font catalog requires at least one source.")
-        }
-        if (capturedSources.map(FontSource::id).distinct().size != capturedSources.size) {
-            return embeddedCatalogFailure("An embedded font catalog must not contain the same source twice.")
-        }
-
-        val diagnostics = mutableListOf<FontDiagnostic>()
-        val entries = mutableListOf<EmbeddedFontCatalogEntry>()
-        capturedSources.forEach { source ->
-            when (val parsed = SfntReader.readMetadata(source)) {
-                is FontOperationResult.Success<*> -> {
-                    entries += EmbeddedFontCatalogEntry(source, parsed.value as ParsedTrueTypeFont)
-                    diagnostics += parsed.diagnostics
-                }
-
-                is FontOperationResult.Failure -> return FontOperationResult.Failure(
-                    parsed.error,
-                    diagnostics + parsed.diagnostics,
-                )
-
-                is FontOperationResult.Cancelled -> return FontOperationResult.Cancelled(
-                    diagnostics + parsed.diagnostics,
-                )
-            }
-        }
-
         val generation = FontCatalogGeneration(
             provider = FontProviderId("embedded-opentype"),
             value = capturedSources.joinToString(prefix = "embedded-", separator = ".") { source ->
                 (source.id as FontSourceId.Portable).contentDigest.value
             },
         )
-        return FontOperationResult.Success(EmbeddedFontCatalog(generation, entries), diagnostics)
+        return createTrueTypeCatalog(capturedSources, generation)
+    }
+}
+
+/** Builds one catalog snapshot from captured sources under an already-frozen provider generation. */
+internal fun createTrueTypeCatalog(
+    sources: List<FontSource>,
+    generation: FontCatalogGeneration,
+): FontOperationResult<FontCatalogSnapshot> {
+    val capturedSources = sources.toList()
+    if (capturedSources.isEmpty()) {
+        return embeddedCatalogFailure("An embedded font catalog requires at least one source.")
+    }
+    if (capturedSources.map(FontSource::id).distinct().size != capturedSources.size) {
+        return embeddedCatalogFailure("An embedded font catalog must not contain the same source twice.")
     }
 
-    private fun embeddedCatalogFailure(message: String): FontOperationResult.Failure =
-        FontOperationResult.Failure(FontError.InvalidFontData(message))
+    val diagnostics = mutableListOf<FontDiagnostic>()
+    val entries = mutableListOf<EmbeddedFontCatalogEntry>()
+    capturedSources.forEach { source ->
+        when (val parsed = SfntReader.readMetadata(source)) {
+            is FontOperationResult.Success<*> -> {
+                entries += EmbeddedFontCatalogEntry(source, parsed.value as ParsedTrueTypeFont)
+                diagnostics += parsed.diagnostics
+            }
+
+            is FontOperationResult.Failure -> return FontOperationResult.Failure(
+                parsed.error,
+                diagnostics + parsed.diagnostics,
+            )
+
+            is FontOperationResult.Cancelled -> return FontOperationResult.Cancelled(
+                diagnostics + parsed.diagnostics,
+            )
+        }
+    }
+
+    return FontOperationResult.Success(EmbeddedFontCatalog(generation, entries), diagnostics)
 }
+
+private fun embeddedCatalogFailure(message: String): FontOperationResult.Failure =
+    FontOperationResult.Failure(FontError.InvalidFontData(message))
