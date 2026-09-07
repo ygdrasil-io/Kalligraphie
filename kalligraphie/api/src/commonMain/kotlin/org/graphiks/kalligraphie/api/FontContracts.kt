@@ -481,6 +481,25 @@ public interface FontInstance {
         requirements: FontAccessRequirementsSnapshot,
     ): FontOperationResult<FontRenderAssetHandle> =
         unsupportedContractOperation("This font instance does not support render assets.")
+
+    /**
+     * Acquires a render asset using the full geometry-neutral [renderVariant] snapshot.
+     *
+     * The default implementation preserves the legacy key-only route. Providers that support
+     * palette selection or foreground-color substitution override this operation and must bind
+     * every visual selection into the returned asset key. The snapshot is copied by value and
+     * does not alter shaping, advances, line breaking, or carets.
+     *
+     * @param resolver live resolver for the exact provider generation.
+     * @param renderVariant palette and foreground selection used for materialization.
+     * @param requirements ordered representation profiles and mandatory resource bounds.
+     * @return an owned asset, or a typed requirement, lifecycle, or provider-generation failure.
+     */
+    public fun acquireRenderAsset(
+        resolver: FontAssetResolverHandle,
+        renderVariant: FontRenderVariantSnapshot,
+        requirements: FontAccessRequirementsSnapshot,
+    ): FontOperationResult<FontRenderAssetHandle> = acquireRenderAsset(resolver, renderVariant.key, requirements)
 }
 
 /**

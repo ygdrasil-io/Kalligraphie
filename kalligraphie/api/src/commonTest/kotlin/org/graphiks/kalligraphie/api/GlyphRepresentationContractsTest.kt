@@ -28,6 +28,7 @@ class GlyphRepresentationContractsTest {
             acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE, GlyphPaintNodeKind.GROUP),
             acceptedCompositionModes = emptyList(),
             limits = PaintGraphLimits(maxNodes = 4, maxReferences = 4, maxDepth = 4),
+            outlineProfile = outlineProfile(),
         )
 
         assertEquals(false, profile.accepts(paint))
@@ -115,6 +116,7 @@ class GlyphRepresentationContractsTest {
             acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE),
             acceptedCompositionModes = emptyList(),
             limits = PaintGraphLimits(maxNodes = 4, maxReferences = 0, maxDepth = 1),
+            outlineProfile = outline,
         )
         val generation = FontCatalogGeneration(FontProviderId("embedded"), "generation-1")
         val outlineKey = FontRenderAssetKey(instanceKey(), FontRenderVariantKey.default, outline, generation)

@@ -102,19 +102,24 @@ public object ColrCpalReader {
      * @param colrTable exact bytes of the OpenType `COLR` table.
      * @param cpalTable exact bytes of the OpenType `CPAL` table.
      * @param limits resource bounds enforced before allocating decoded records.
+     * @param glyphCount optional face glyph count used to reject invalid COLR glyph references.
      * @return complete portable data or a typed unsupported-version, malformed-data, or limit failure.
      */
     public fun read(
         colrTable: ByteArray,
         cpalTable: ByteArray,
         limits: ColrCpalV0Limits = ColrCpalV0Limits.default,
+        glyphCount: Int? = null,
     ): FontOperationResult<ColrCpalV0Data> {
+        if (glyphCount != null && glyphCount <= 0) {
+            return invalid("font.colr.invalid-glyph-count", "COLR glyph count must be positive.", "COLR")
+        }
         val palettes = when (val parsed = readCpal(cpalTable, limits)) {
             is FontOperationResult.Success -> parsed.value
             is FontOperationResult.Failure -> return parsed
             is FontOperationResult.Cancelled -> return parsed
         }
-        val layersByGlyph = when (val parsed = readColr(colrTable, palettes.first().size, limits)) {
+        val layersByGlyph = when (val parsed = readColr(colrTable, palettes.first().size, limits, glyphCount)) {
             is FontOperationResult.Success -> parsed.value
             is FontOperationResult.Failure -> return parsed
             is FontOperationResult.Cancelled -> return parsed
@@ -170,6 +175,7 @@ public object ColrCpalReader {
         table: ByteArray,
         paletteEntryCount: Int,
         limits: ColrCpalV0Limits,
+        glyphCount: Int?,
     ): FontOperationResult<Map<GlyphId, List<ColrV0Layer>>> {
         if (table.size < COLR_V0_HEADER_LENGTH) return invalid("font.colr.truncated", "COLR version 0 header is truncated.", "COLR")
         val version = readUInt16(table, 0)?.toInt() ?: return invalid("font.colr.truncated", "COLR version is truncated.", "COLR")
@@ -190,6 +196,9 @@ public object ColrCpalReader {
             val offset = layerOffset + layerIndex.toLong() * LAYER_RECORD_LENGTH
             val glyphId = readUInt16(table, offset.toInt())?.toInt()
                 ?: return invalid("font.colr.truncated", "COLR layer glyph is truncated.", "COLR")
+            if (glyphCount != null && glyphId !in 0 until glyphCount) {
+                return invalid("font.colr.invalid-glyph-reference", "COLR layer references a glyph outside the face.", "COLR")
+            }
             val paletteIndex = readUInt16(table, offset.toInt() + 2)?.toInt()
                 ?: return invalid("font.colr.truncated", "COLR layer palette index is truncated.", "COLR")
             if (paletteIndex != ColrV0Layer.foregroundColorIndex && paletteIndex !in 0 until paletteEntryCount) {
@@ -203,6 +212,9 @@ public object ColrCpalReader {
             val offset = baseGlyphOffset + recordIndex.toLong() * BASE_GLYPH_RECORD_LENGTH
             val glyphId = readUInt16(table, offset.toInt())?.toInt()
                 ?: return invalid("font.colr.truncated", "COLR base glyph is truncated.", "COLR")
+            if (glyphCount != null && glyphId !in 0 until glyphCount) {
+                return invalid("font.colr.invalid-glyph-reference", "COLR base record references a glyph outside the face.", "COLR")
+            }
             val firstLayer = readUInt16(table, offset.toInt() + 2)?.toInt()
                 ?: return invalid("font.colr.truncated", "COLR first layer index is truncated.", "COLR")
             val layerCountForGlyph = readUInt16(table, offset.toInt() + 4)?.toInt()

@@ -81,6 +81,8 @@ public class EmbeddedFontCatalog(
                     characterMapping = true,
                     shaping = true,
                     outline = true,
+                    paintGraph = parsedFonts.getValue(id).tableRecords.containsKey("COLR") &&
+                        parsedFonts.getValue(id).tableRecords.containsKey("CPAL"),
                 ),
             )
         }
@@ -115,7 +117,7 @@ public class EmbeddedFontCatalog(
                 ),
             )
         }
-        if (!requirements.isSupportedForEmbeddedTrueType()) {
+        if (!requirements.isSupportedForEmbeddedTrueType(parsedFonts.getValue(faceId))) {
             return failure(
                 FontError.UnsupportedRepresentationProfile(
                     message = "Unsupported font access requirements for this embedded TrueType catalog.",
@@ -126,7 +128,7 @@ public class EmbeddedFontCatalog(
                         code = "font.unsupported-representation-profile",
                         severity = FontDiagnosticSeverity.ERROR,
                         location = FontDiagnosticLocation.Source,
-                        message = "Only LAYOUT_ONLY and schemaVersion=1 renderable outline profiles are supported.",
+                        message = "Only LAYOUT_ONLY, schemaVersion=1 outlines, and declared COLR/CPAL version 0 paint profiles are supported.",
                     ),
                 ),
             )
@@ -134,10 +136,19 @@ public class EmbeddedFontCatalog(
         return FontOperationResult.Success(resolvedFaces.getValue(faceId))
     }
 
-    private fun FontAccessRequirementsSnapshot.isSupportedForEmbeddedTrueType(): Boolean =
+    private fun FontAccessRequirementsSnapshot.isSupportedForEmbeddedTrueType(parsedFont: ParsedTrueTypeFont): Boolean =
         when (mode) {
             FontAccessRequirementsSnapshot.Mode.LAYOUT_ONLY -> true
-            FontAccessRequirementsSnapshot.Mode.RENDERABLE -> outlineProfile?.schemaVersion == 1
+            FontAccessRequirementsSnapshot.Mode.RENDERABLE -> acceptedProfiles.firstOrNull().let { profile ->
+                when (profile) {
+                    is org.graphiks.kalligraphie.api.OutlineProfile -> profile.schemaVersion == 1
+                    is org.graphiks.kalligraphie.api.PaintGraphProfile ->
+                        profile.schemaVersion == 1 &&
+                            parsedFont.tableRecords.containsKey("COLR") &&
+                            parsedFont.tableRecords.containsKey("CPAL")
+                    else -> false
+                }
+            }
         }
 
     private fun failure(error: FontError, diagnostics: List<FontDiagnostic> = listOf(error.toDiagnostic())): FontOperationResult.Failure =
