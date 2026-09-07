@@ -17,7 +17,6 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
 
 class MacosSystemFontCatalogTest {
     @Test
@@ -30,7 +29,6 @@ class MacosSystemFontCatalogTest {
 
         assertEquals("macos-system-opentype", first.generation.provider.value)
         assertNotEquals(first.generation, second.generation)
-        assertTrue(first.faces.map { it.id }.toSet().intersect(second.faces.map { it.id }.toSet()).isNotEmpty())
 
         val selected = assertNotNull(first.faces.firstNotNullOfOrNull { record ->
             if (!record.capabilities.outline) return@firstNotNullOfOrNull null
@@ -60,6 +58,32 @@ class MacosSystemFontCatalogTest {
         } finally {
             firstResolver.close()
             secondResolver.close()
+        }
+    }
+
+    @Test
+    fun preservesPortableIdentityAcrossGenerationsForAnUnchangedControlledRoot() {
+        if (!System.getProperty("os.name").startsWith("Mac")) return
+
+        val root = Files.createTempDirectory("kalligraphie-system-font-identity")
+        try {
+            Files.write(root.resolve("fixture.ttf"), minimalTrueTypeFont(glyphCount = 1, tables = emptyMap()))
+            val options = MacosSystemFontCatalogOptions(
+                roots = listOf(root.toString()),
+                maxPathsToVisit = 2,
+                maxFaces = 1,
+                maxSourceBytes = 4_096,
+                maxTotalSourceBytes = 4_096,
+            )
+
+            val first = success(MacosSystemFontCatalog.open(options))
+            val second = success(MacosSystemFontCatalog.open(options))
+
+            assertEquals(first.faces.single().id, second.faces.single().id)
+            assertNotEquals(first.generation, second.generation)
+        } finally {
+            Files.deleteIfExists(root.resolve("fixture.ttf"))
+            Files.deleteIfExists(root)
         }
     }
 

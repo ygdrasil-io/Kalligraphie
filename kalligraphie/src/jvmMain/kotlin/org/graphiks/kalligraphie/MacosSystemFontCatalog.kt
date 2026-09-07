@@ -79,7 +79,10 @@ public object MacosSystemFontCatalog {
      * Captures a bounded snapshot of supported macOS system TrueType fonts.
      *
      * The operation inspects no more than [MacosSystemFontCatalogOptions.maxPathsToVisit] paths,
-     * considers regular `.ttf` files only, then orders the captured candidates lexically. Each
+     * considers regular `.ttf` files only, then orders the captured candidates lexically. The
+     * operating system's directory enumeration can affect which candidates fit a truncated
+     * discovery budget; snapshots retain their exact captured records and a controlled unchanged
+     * root preserves the portable identity of every retained source across generations. Each
      * source is copied through a byte limit before parsing, so a file changing between discovery
      * and capture cannot bypass [MacosSystemFontCatalogOptions.maxSourceBytes]. Unreadable or
      * unsupported candidates are skipped without becoming face records. Reaching a discovery
@@ -168,14 +171,14 @@ public object MacosSystemFontCatalog {
             runCatching {
                 Files.walk(Path.of(root)).use { stream ->
                     val iterator = stream.iterator()
-                    while (iterator.hasNext() && inspectedPaths < maximumPaths) {
+                    while (inspectedPaths < maximumPaths && iterator.hasNext()) {
                         val path = iterator.next()
                         inspectedPaths += 1
                         if (Files.isRegularFile(path) && path.fileName.toString().endsWith(".ttf", ignoreCase = true)) {
                             paths.add(path)
                         }
                     }
-                    if (iterator.hasNext()) truncated = true
+                    if (inspectedPaths >= maximumPaths) truncated = true
                 }
             }
         }
