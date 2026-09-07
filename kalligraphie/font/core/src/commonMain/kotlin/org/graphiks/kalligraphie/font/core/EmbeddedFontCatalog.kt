@@ -476,7 +476,7 @@ private fun Success<GlyphRepresentation>.estimatedRetainedBytes(): Long =
     value.estimatedRetainedBytes().saturatingAdd(diagnostics.estimatedRetainedBytes())
 
 private fun GlyphRepresentationKey.estimatedRetainedBytes(): Long {
-    val asset = assetKey
+    val asset = assetIdentity
     var total = 80L
     total = total.saturatingAdd(profile.parameters.estimatedRetainedBytes())
     total = total.saturatingAdd(routeParameters.estimatedRetainedBytes())
@@ -484,12 +484,10 @@ private fun GlyphRepresentationKey.estimatedRetainedBytes(): Long {
     return total
 }
 
-private fun FontRenderAssetKey.estimatedRetainedBytes(): Long {
+private fun org.graphiks.kalligraphie.api.FontRenderAssetSemanticIdentity.estimatedRetainedBytes(): Long {
     val instance = fontInstanceKey
     var total = 112L
     total = total.saturatingAdd(variant.value.estimatedRetainedBytes())
-    total = total.saturatingAdd(generation.provider.value.estimatedRetainedBytes())
-    total = total.saturatingAdd(generation.value.estimatedRetainedBytes())
     total = total.saturatingAdd(representationProfile.estimatedRetainedBytes())
     total = total.saturatingAdd(variantSnapshot?.estimatedRetainedBytes() ?: 0L)
     total = total.saturatingAdd(instance.face.estimatedRetainedBytes())

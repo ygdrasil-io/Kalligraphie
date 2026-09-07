@@ -247,12 +247,42 @@ public data class FontRenderVariantKey(
 }
 
 /**
- * Portable identity of one acquired render asset.
+ * Content-based identity of one acquired render asset, independent of a provider generation.
  *
- * The key binds the exact catalog generation, font instance, render variant, and immutable
- * representation profile used by an asset. It owns only portable values, carries no native
- * handle, and is safe to retain or share between threads after the corresponding asset has been
- * closed. A key does not keep the catalog, resolver, or asset resource alive.
+ * For a portable [FontSourceId], equal source content, instance geometry, variant, and profile
+ * produce equal identities across independently captured catalog generations. For an opaque
+ * source, the provider domain and source token already carried by [FontInstanceKey] remain part
+ * of equality, so independent providers cannot collide. This value is safe for semantic caches
+ * but is not a locator: reopening still requires the generation-bound [FontRenderAssetKey] and a
+ * live matching resolver.
+ */
+public data class FontRenderAssetSemanticIdentity(
+    /** Exact font instance whose content and geometric interpretation are materialized. */
+    public val fontInstanceKey: FontInstanceKey,
+    /** Geometry-neutral visual variant selected for the materialized payload. */
+    public val variant: FontRenderVariantKey,
+    /** Immutable representation profile that constrains the materialized payload. */
+    public val representationProfile: GlyphRepresentationProfile,
+    /** Complete variant context when a non-default variant needs it for semantic equality. */
+    public val variantSnapshot: FontRenderVariantSnapshot? = null,
+) {
+    init {
+        require(variantSnapshot == null || variantSnapshot.key == variant) {
+            "Render-variant snapshot must match the asset variant key."
+        }
+        require(variant != FontRenderVariantKey.default || variantSnapshot == null) {
+            "The default render variant must not retain redundant snapshot context."
+        }
+    }
+}
+
+/**
+ * Generation-bound reopening context of one acquired render asset.
+ *
+ * [semanticIdentity] supplies the content-based identity suitable for portable semantic caches;
+ * [generation] supplies the provider domain and immutable snapshot required for reopening. This
+ * key owns only immutable values, carries no native handle, and is safe to retain after the asset
+ * closes, but it does not keep a resolver, catalogue, or resource alive.
  */
 public data class FontRenderAssetKey(
     /** Exact font instance served by the asset. */
@@ -281,6 +311,21 @@ public data class FontRenderAssetKey(
             "The default render variant must not retain redundant snapshot context."
         }
     }
+
+    /**
+     * Content-based identity without [generation].
+     *
+     * This value is recreated from immutable fields and therefore does not retain an asset or
+     * provider resource. Use this value, rather than this reopening key, when sharing portable
+     * cache entries across equal catalog generations.
+     */
+    public val semanticIdentity: FontRenderAssetSemanticIdentity
+        get() = FontRenderAssetSemanticIdentity(
+            fontInstanceKey = fontInstanceKey,
+            variant = variant,
+            representationProfile = representationProfile,
+            variantSnapshot = variantSnapshot,
+        )
 
     /**
      * Outline profile enforced by this asset, or `null` when its selected representation is not
