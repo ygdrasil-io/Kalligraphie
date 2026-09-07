@@ -273,6 +273,10 @@ internal class EmbeddedFontAssetResolver(
             is org.graphiks.kalligraphie.api.PaintGraphProfile ->
                 profile.schemaVersion == 1 &&
                     parsedFont.tableRecords.containsKey("COLR") && parsedFont.tableRecords.containsKey("CPAL")
+            is org.graphiks.kalligraphie.api.BitmapProfile ->
+                key.variant == FontRenderVariantKey.default &&
+                    profile.schemaVersion == 1 &&
+                    parsedFont.tableRecords.containsKey("EBLC") && parsedFont.tableRecords.containsKey("EBDT")
             else -> false
         }
         return representationIsSupported &&

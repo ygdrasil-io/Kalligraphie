@@ -274,6 +274,10 @@ internal data class TrueTypeFontInstance(
                     parsedFont.tableRecords.containsKey("glyf") &&
                     parsedFont.tableRecords.containsKey("loca")
             is PaintGraphProfile -> profile.schemaVersion == 1 && paintGraphSupported
+            is BitmapProfile ->
+                profile.schemaVersion == 1 &&
+                    parsedFont.tableRecords.containsKey("EBLC") &&
+                    parsedFont.tableRecords.containsKey("EBDT")
             else -> false
         }
 

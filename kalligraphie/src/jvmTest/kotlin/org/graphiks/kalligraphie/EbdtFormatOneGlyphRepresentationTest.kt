@@ -67,6 +67,65 @@ class EbdtFormatOneGlyphRepresentationTest {
         }
     }
 
+    @Test
+    fun reopensTheExactBitmapAssetAfterTheOriginalHandleCloses() {
+        val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(bitmapProfile()))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+
+        try {
+            val original = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
+            val key = original.key
+            original.close()
+
+            val reopened = success(resolver.reopen(key))
+            try {
+                val bitmap = assertIs<GlyphRepresentation.Bitmap>(
+                    success(reopened.resolveGlyph(FontGlyphRequest(GlyphId(3)))),
+                ).bitmap
+                assertBitmap(bitmap)
+            } finally {
+                reopened.close()
+            }
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
+    fun rejectsTheWholeBitmapTableBeforePublishingAnAssetWhenItsSourceBytesExceedTheProfileLimit() {
+        val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(bitmapProfile(maxBitmapTableBytes = 1)))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+
+        try {
+            val result = instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements)
+            assertIs<FontError.ResourceLimitExceeded>(assertIs<FontOperationResult.Failure>(result).error)
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
+    fun rejectsTheSelectedStrikeBeforePublishingAnAssetWhenAggregateRecordsExceedTheProfileLimit() {
+        val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(bitmapProfile(maxRecordCount = 0)))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+
+        try {
+            val result = instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements)
+            assertIs<FontError.ResourceLimitExceeded>(assertIs<FontOperationResult.Failure>(result).error)
+        } finally {
+            resolver.close()
+        }
+    }
+
     private fun assertBitmap(bitmap: BitmapGlyphIR) {
         assertEquals(BitmapStrike(16, 16), bitmap.strike)
         assertEquals(13, bitmap.width)
@@ -80,17 +139,27 @@ class EbdtFormatOneGlyphRepresentationTest {
         assertContentEquals(expectedPixels(), bitmap.copyDecodedPixels())
     }
 
-    private fun bitmapProfile(maxWidth: Int = 16): BitmapProfile = BitmapProfile(
+    private fun bitmapProfile(
+        maxWidth: Int = 16,
+        maxBitmapTableBytes: Int = 16_384,
+        maxRecordCount: Int = 16,
+    ): BitmapProfile = BitmapProfile(
         strike = BitmapStrike(16, 16),
         acceptedPixelFormats = listOf(BitmapPixelFormat.ALPHA_8),
         acceptedColorSpaces = listOf(GlyphColorSpace.SRGB),
         limits = BitmapLimits(
             maxStrikes = 3,
+            maxIndexSubtables = 16,
+            maxRecordCount = maxRecordCount,
+            maxIndexTableBytes = 16_384,
+            maxBitmapTableBytes = maxBitmapTableBytes,
             maxWidth = maxWidth,
             maxHeight = 16,
             maxPixels = 256,
             maxCompressedBytes = 64,
+            maxTotalCompressedBytes = 1_024,
             maxDecodedBytes = 256,
+            maxTotalDecodedBytes = 1_024,
         ),
     )
 

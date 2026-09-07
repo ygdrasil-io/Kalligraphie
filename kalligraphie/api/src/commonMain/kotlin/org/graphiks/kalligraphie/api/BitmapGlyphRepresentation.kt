@@ -37,6 +37,14 @@ public data class BitmapStrike(
 public data class BitmapLimits(
     /** Maximum strikes inspected while selecting the exact requested strike. */
     public val maxStrikes: Int,
+    /** Maximum EBLC index subtables inspected in the selected strike. */
+    public val maxIndexSubtables: Int,
+    /** Maximum bitmap record slots inspected in the selected strike; zero rejects every slot. */
+    public val maxRecordCount: Int,
+    /** Maximum source bytes retained from the complete EBLC index table. */
+    public val maxIndexTableBytes: Int,
+    /** Maximum source bytes retained from the complete EBDT bitmap table. */
+    public val maxBitmapTableBytes: Int,
     /** Maximum decoded bitmap width in pixels. */
     public val maxWidth: Int,
     /** Maximum decoded bitmap height in pixels. */
@@ -45,16 +53,26 @@ public data class BitmapLimits(
     public val maxPixels: Int,
     /** Maximum compressed source bytes read for one bitmap glyph. */
     public val maxCompressedBytes: Int,
+    /** Maximum compressed source bytes read across all selected bitmap records. */
+    public val maxTotalCompressedBytes: Int,
     /** Maximum decoded pixel bytes retained for one bitmap glyph. */
     public val maxDecodedBytes: Int,
+    /** Maximum decoded pixel bytes retained across all selected bitmap records. */
+    public val maxTotalDecodedBytes: Int,
 ) {
     init {
         require(maxStrikes > 0) { "maxStrikes must be positive." }
+        require(maxIndexSubtables > 0) { "maxIndexSubtables must be positive." }
+        require(maxRecordCount >= 0) { "maxRecordCount must be non-negative." }
+        require(maxIndexTableBytes > 0) { "maxIndexTableBytes must be positive." }
+        require(maxBitmapTableBytes > 0) { "maxBitmapTableBytes must be positive." }
         require(maxWidth > 0) { "maxWidth must be positive." }
         require(maxHeight > 0) { "maxHeight must be positive." }
         require(maxPixels > 0) { "maxPixels must be positive." }
         require(maxCompressedBytes > 0) { "maxCompressedBytes must be positive." }
+        require(maxTotalCompressedBytes > 0) { "maxTotalCompressedBytes must be positive." }
         require(maxDecodedBytes > 0) { "maxDecodedBytes must be positive." }
+        require(maxTotalDecodedBytes > 0) { "maxTotalDecodedBytes must be positive." }
     }
 }
 

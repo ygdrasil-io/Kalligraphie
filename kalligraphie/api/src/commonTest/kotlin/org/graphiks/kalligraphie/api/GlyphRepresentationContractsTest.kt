@@ -287,11 +287,17 @@ class GlyphRepresentationContractsTest {
             acceptedColorSpaces = listOf(GlyphColorSpace.SRGB),
             limits = BitmapLimits(
                 maxStrikes = 1,
+                maxIndexSubtables = 7,
+                maxRecordCount = 8,
+                maxIndexTableBytes = 9,
+                maxBitmapTableBytes = 10,
                 maxWidth = 2,
                 maxHeight = 3,
                 maxPixels = 4,
                 maxCompressedBytes = 5,
+                maxTotalCompressedBytes = 11,
                 maxDecodedBytes = 6,
+                maxTotalDecodedBytes = 12,
             ),
         )
 
@@ -300,7 +306,7 @@ class GlyphRepresentationContractsTest {
             GlyphRepresentationProfileKey.paintGraph(paint).parameters,
         )
         assertEquals(
-            "strike=16,17;pixels=ALPHA_8;colors=SRGB;limits=1,2,3,4,5,6",
+            "strike=16,17;pixels=ALPHA_8;colors=SRGB;limits=1,7,8,9,10,2,3,4,5,11,6,12",
             GlyphRepresentationProfileKey.bitmap(bitmap).parameters,
         )
         val changedOutlineSchema = PaintGraphProfile(

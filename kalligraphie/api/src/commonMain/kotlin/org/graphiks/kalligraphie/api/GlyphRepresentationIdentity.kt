@@ -109,11 +109,17 @@ private fun PaintGraphLimits.canonicalPaintLimits(): String =
 private fun BitmapLimits.canonicalBitmapLimits(): String =
     listOf(
         maxStrikes,
+        maxIndexSubtables,
+        maxRecordCount,
+        maxIndexTableBytes,
+        maxBitmapTableBytes,
         maxWidth,
         maxHeight,
         maxPixels,
         maxCompressedBytes,
+        maxTotalCompressedBytes,
         maxDecodedBytes,
+        maxTotalDecodedBytes,
     ).joinToString(",")
 
 /**
