@@ -37,8 +37,7 @@ env \
   KALLIGRAPHIE_GLYPH_MATERIALIZATION_WARMUP=5 \
   KALLIGRAPHIE_GLYPH_MATERIALIZATION_ITERATIONS=20 \
   KALLIGRAPHIE_GLYPH_MATERIALIZATION_OUTPUT=/tmp/kalligraphie-glyph-materialization.md \
-  ./gradlew :kalligraphie:jvmTest \
-  --tests org.graphiks.kalligraphie.GlyphMaterializationBenchmarkTest.runsEveryConfiguredMaterializationProfileOnlyWhenExplicitlyEnabled \
+  ./gradlew :kalligraphie:glyphMaterializationMeasurement \
   --rerun-tasks --no-daemon
 ```
 
