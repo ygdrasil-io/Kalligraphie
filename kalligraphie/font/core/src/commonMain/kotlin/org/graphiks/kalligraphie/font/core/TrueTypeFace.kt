@@ -148,8 +148,13 @@ private data class TrueTypeFontInstance(
         if (requirements.mode != FontAccessRequirementsSnapshot.Mode.RENDERABLE) {
             return failure(FontError.UnsupportedRepresentationProfile("A renderable access mode is required.", FontDiagnosticLocation.FaceId(faceId)))
         }
-        val profile = requirements.acceptedProfiles.firstOrNull()
-            ?: return failure(FontError.UnsupportedRepresentationProfile("At least one representation profile is required.", FontDiagnosticLocation.FaceId(faceId)))
+        val profile = requirements.acceptedProfiles.firstOrNull(::canMaterialize)
+            ?: return failure(
+                FontError.UnsupportedRepresentationProfile(
+                    "None of the requested representation profiles can be materialized by this font.",
+                    FontDiagnosticLocation.FaceId(faceId),
+                ),
+            )
         if (resolver !is EmbeddedFontAssetResolver) {
             return failure(FontError.InvalidFontData("Resolver was not opened by the embedded TrueType catalog.", FontDiagnosticLocation.FaceId(faceId)))
         }
@@ -346,6 +351,17 @@ private data class TrueTypeFontInstance(
         val ebdt = slice(sourceBytes, ebdtRecord)
             ?: return failure(FontError.InvalidFontData("EBDT table exceeds embedded source bytes.", FontDiagnosticLocation.Table("EBDT")))
         return EbdtFormatOneReader.read(eblc, ebdt, parsedFont.metadata.glyphCount, profile)
+    }
+
+    private fun canMaterialize(profile: org.graphiks.kalligraphie.api.GlyphRepresentationProfile): Boolean = when (profile) {
+        is org.graphiks.kalligraphie.api.OutlineProfile -> profile.schemaVersion == 1 &&
+            parsedFont.tableRecords.containsKey("glyf") && parsedFont.tableRecords.containsKey("loca")
+        is PaintGraphProfile -> profile.schemaVersion == 1 &&
+            ((parsedFont.tableRecords.containsKey("COLR") && parsedFont.tableRecords.containsKey("CPAL")) ||
+                parsedFont.tableRecords.containsKey("SVG "))
+        is BitmapProfile -> profile.schemaVersion == 1 &&
+            parsedFont.tableRecords.containsKey("EBLC") && parsedFont.tableRecords.containsKey("EBDT")
+        else -> false
     }
 
 }

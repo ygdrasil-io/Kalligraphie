@@ -143,7 +143,7 @@ public class EmbeddedFontCatalog(
     private fun FontAccessRequirementsSnapshot.isSupportedForEmbeddedTrueType(parsedFont: ParsedTrueTypeFont): Boolean =
         when (mode) {
             FontAccessRequirementsSnapshot.Mode.LAYOUT_ONLY -> true
-            FontAccessRequirementsSnapshot.Mode.RENDERABLE -> acceptedProfiles.firstOrNull().let { profile ->
+            FontAccessRequirementsSnapshot.Mode.RENDERABLE -> acceptedProfiles.any { profile ->
                 when (profile) {
                     is org.graphiks.kalligraphie.api.OutlineProfile -> profile.schemaVersion == 1 &&
                         parsedFont.tableRecords.containsKey("glyf") &&

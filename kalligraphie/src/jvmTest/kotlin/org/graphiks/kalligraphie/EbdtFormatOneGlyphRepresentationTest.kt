@@ -14,8 +14,10 @@ import org.graphiks.kalligraphie.api.FontRenderVariantKey
 import org.graphiks.kalligraphie.api.FontSourceProvenance
 import org.graphiks.kalligraphie.api.GlyphColorSpace
 import org.graphiks.kalligraphie.api.GlyphId
+import org.graphiks.kalligraphie.api.GlyphMaterializationRoute
 import org.graphiks.kalligraphie.api.GlyphRepresentation
 import org.graphiks.kalligraphie.api.LayoutUnit
+import org.graphiks.kalligraphie.api.OutlineProfile
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -62,6 +64,63 @@ class EbdtFormatOneGlyphRepresentationTest {
             )
 
             assertIs<FontError.ResourceLimitExceeded>(failure.error)
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
+    fun certifiesTheBitmapRouteAndResolvesTheExactCertificateWithoutASecondRouteNegotiation() {
+        val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(bitmapProfile()))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+
+        try {
+            val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
+            try {
+                val certified = success(asset.resolveGlyphCertified(FontGlyphRequest(GlyphId(3))))
+                assertEquals(GlyphMaterializationRoute.BITMAP, certified.certificate.route)
+                assertIs<GlyphRepresentation.Bitmap>(certified.representation)
+
+                val resolved = success(asset.resolveCertifiedGlyph(certified.certificate))
+                assertIs<GlyphRepresentation.Bitmap>(resolved)
+            } finally {
+                asset.close()
+            }
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
+    fun selectsTheFirstProfileThatTheFaceCanActuallyMaterializeInDeclaredPreferenceOrder() {
+        val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(
+            listOf(
+                OutlineProfile(
+                    maxBytes = 1_024,
+                    maxContours = 8,
+                    maxPoints = 64,
+                    maxCompositeDepth = 2,
+                    maxCompositeComponents = 2,
+                ),
+                bitmapProfile(),
+            ),
+        )
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+
+        try {
+            val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
+            try {
+                assertEquals(bitmapProfile(), asset.key.representationProfile)
+                assertIs<GlyphRepresentation.Bitmap>(success(asset.resolveGlyph(FontGlyphRequest(GlyphId(3)))))
+            } finally {
+                asset.close()
+            }
         } finally {
             resolver.close()
         }

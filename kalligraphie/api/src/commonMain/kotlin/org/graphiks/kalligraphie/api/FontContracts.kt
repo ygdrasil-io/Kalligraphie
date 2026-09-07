@@ -381,6 +381,84 @@ public interface FontRenderAssetHandle {
         }
 
     /**
+     * Resolves [request] and returns the exact certificate for the published representation.
+     *
+     * The result never embeds an asset handle and does not retain a layout, resolver, or catalog.
+     * The certificate binds this handle's key, the glyph ID, its selected profile schema, and the
+     * route observed before publication. Cancellation is cooperative and produces no partial
+     * representation; the method is safe to invoke concurrently with other resolutions and close.
+     */
+    public fun resolveGlyphCertified(
+        request: FontGlyphRequest,
+        cancellationToken: CancellationToken = CancellationToken.none,
+    ): FontOperationResult<CertifiedGlyphRepresentation> = when (val result = resolveGlyph(request, cancellationToken)) {
+        is FontOperationResult.Success -> {
+            val route = result.value.materializationRoute()
+            try {
+                FontOperationResult.Success(
+                    CertifiedGlyphRepresentation(
+                        representation = result.value,
+                        certificate = GlyphMaterializationCertificate(key, request.typedGlyphId, route),
+                    ),
+                    result.diagnostics,
+                )
+            } catch (_: IllegalArgumentException) {
+                FontOperationResult.Failure(
+                    FontError.InvalidFontData(
+                        "Render asset returned a representation incompatible with its selected profile.",
+                        FontDiagnosticLocation.Glyph(request.glyphId),
+                    ),
+                    result.diagnostics,
+                )
+            }
+        }
+
+        is FontOperationResult.Failure -> result
+        is FontOperationResult.Cancelled -> result
+    }
+
+    /**
+     * Resolves the exact route described by [certificate].
+     *
+     * The certificate must match this asset key and glyph ID exactly; a changed instance, variant,
+     * profile, generation, or glyph is rejected before resolution. While the handle remains open,
+     * implementations must return the certificate's representation, an explicit no-ink result,
+     * cancellation, or an operational resource failure—not a new route negotiation. The method is
+     * concurrent-safe and follows the same close linearization point as [resolveGlyph].
+     */
+    public fun resolveCertifiedGlyph(
+        certificate: GlyphMaterializationCertificate,
+        cancellationToken: CancellationToken = CancellationToken.none,
+    ): FontOperationResult<GlyphRepresentation> {
+        if (!certificate.matches(key, certificate.glyphId)) {
+            return FontOperationResult.Failure(
+                FontError.InvalidFontData(
+                    "Glyph materialization certificate does not belong to this render asset.",
+                    FontDiagnosticLocation.Glyph(certificate.glyphId.value),
+                ),
+            )
+        }
+        return when (val result = resolveGlyph(FontGlyphRequest(certificate.glyphId), cancellationToken)) {
+            is FontOperationResult.Success -> {
+                if (result.value.materializationRoute() != certificate.route) {
+                    FontOperationResult.Failure(
+                        FontError.InvalidFontData(
+                            "Certified glyph resolution returned a route different from its certificate.",
+                            FontDiagnosticLocation.Glyph(certificate.glyphId.value),
+                        ),
+                        result.diagnostics,
+                    )
+                } else {
+                    result
+                }
+            }
+
+            is FontOperationResult.Failure -> result
+            is FontOperationResult.Cancelled -> result
+        }
+    }
+
+    /**
      * Closes this asset and releases its resources.
      *
      * The operation is idempotent, thread-safe, and linearizable. Repeated
@@ -389,6 +467,27 @@ public interface FontRenderAssetHandle {
      * [FontError.ResourceClosed].
      */
     public fun close(): FontOperationResult<Unit>
+}
+
+/**
+ * One complete glyph representation paired with the exact route certificate that published it.
+ *
+ * Both fields are immutable portable values. The result owns no asset: callers must retain and
+ * close the originating [FontRenderAssetHandle] separately before using [certificate] to resolve
+ * it again.
+ */
+public data class CertifiedGlyphRepresentation(
+    /** Complete portable glyph result, including an explicit no-ink value when applicable. */
+    public val representation: GlyphRepresentation,
+    /** Certificate exact for [representation]'s asset key, glyph ID, profile, and route. */
+    public val certificate: GlyphMaterializationCertificate,
+)
+
+private fun GlyphRepresentation.materializationRoute(): GlyphMaterializationRoute = when (this) {
+    GlyphRepresentation.Empty -> GlyphMaterializationRoute.EMPTY
+    is GlyphRepresentation.Outline -> GlyphMaterializationRoute.OUTLINE
+    is GlyphRepresentation.Paint -> GlyphMaterializationRoute.PAINT_GRAPH
+    is GlyphRepresentation.Bitmap -> GlyphMaterializationRoute.BITMAP
 }
 
 /** Selects the layout size and geometric interpretation for a font instance. */
