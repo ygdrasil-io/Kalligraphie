@@ -90,6 +90,9 @@ public class PaintGraphProfile(
         if (references > limits.maxReferences) return false
         val paths = paint.nodes.count { node -> node is GlyphPaintNode.SolidOutline }
         if (paths > limits.maxPaths) return false
+        if (paint.nodes.filterIsInstance<GlyphPaintNode.SolidOutline>().any { node -> !outlineProfile.acceptsOutline(node.outline) }) {
+            return false
+        }
         if (paint.nodes.any { node -> node.kind() !in acceptedNodeKinds }) return false
         if (paint.nodes.filterIsInstance<GlyphPaintNode.Group>().any { group -> group.compositionMode !in acceptedCompositionModes }) {
             return false
@@ -118,6 +121,16 @@ private fun GlyphPaintNode.kind(): GlyphPaintNodeKind = when (this) {
     is GlyphPaintNode.SolidOutline -> GlyphPaintNodeKind.SOLID_OUTLINE
     is GlyphPaintNode.Group -> GlyphPaintNodeKind.GROUP
 }
+
+internal fun OutlineProfile.acceptsOutline(outline: GlyphOutlineIR): Boolean =
+    outline.contours.size <= maxContours &&
+        outline.pointCount <= maxPoints &&
+        outline.components.size <= maxCompositeComponents &&
+        outline.limits.maxBytes <= maxBytes &&
+        outline.limits.maxContours <= maxContours &&
+        outline.limits.maxPoints <= maxPoints &&
+        outline.limits.maxCompositeDepth <= maxCompositeDepth &&
+        outline.limits.maxCompositeComponents <= maxCompositeComponents
 
 private fun GlyphPaintIR.depthFromRoot(): Int {
     fun depth(index: Int): Int = 1 + (nodes[index].children.maxOfOrNull(::depth) ?: 0)

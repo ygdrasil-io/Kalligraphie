@@ -173,6 +173,64 @@ class GlyphRepresentationContractsTest {
     }
 
     @Test
+    fun certificateRejectsARouteThatDoesNotMatchItsAssetProfile() {
+        val paintProfile = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE),
+            acceptedCompositionModes = emptyList(),
+            limits = PaintGraphLimits(maxNodes = 1, maxReferences = 0, maxDepth = 1),
+            outlineProfile = outlineProfile(),
+        )
+        val assetKey = FontRenderAssetKey(
+            fontInstanceKey = instanceKey(),
+            variant = FontRenderVariantKey.default,
+            representationProfile = paintProfile,
+            generation = FontCatalogGeneration(FontProviderId("embedded"), "generation-1"),
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            GlyphMaterializationCertificate(
+                assetKey = assetKey,
+                glyphId = GlyphId(12),
+                route = GlyphMaterializationRoute.OUTLINE,
+            )
+        }
+    }
+
+    @Test
+    fun paintProfileRejectsAnOutlineThatExceedsItsNestedOutlineLimits() {
+        val outline = GlyphOutlineIR(
+            glyphId = 12,
+            unitsPerEm = 1_000,
+            bounds = DesignBounds.empty,
+            commands = listOf(
+                GlyphOutlineIR.Command.MoveTo(0, 0),
+                GlyphOutlineIR.Command.Close,
+                GlyphOutlineIR.Command.MoveTo(1, 1),
+                GlyphOutlineIR.Command.Close,
+            ),
+        )
+        val profile = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE),
+            acceptedCompositionModes = emptyList(),
+            limits = PaintGraphLimits(maxNodes = 1, maxReferences = 0, maxDepth = 1),
+            outlineProfile = OutlineProfile(
+                maxBytes = Int.MAX_VALUE,
+                maxContours = 1,
+                maxPoints = 2,
+                maxCompositeDepth = 1,
+                maxCompositeComponents = 1,
+            ),
+        )
+        val paint = GlyphPaintIR(
+            schemaVersion = 1,
+            rootNode = 0,
+            nodes = listOf(GlyphPaintNode.SolidOutline(outline, GlyphColor(0, 0, 0))),
+        )
+
+        assertFalse(profile.accepts(paint))
+    }
+
+    @Test
     fun generationsWithTheSameTokenRemainDistinctAcrossProviderDomains() {
         val left = FontCatalogGeneration(FontProviderId("provider-a"), "generation-7")
         val right = FontCatalogGeneration(FontProviderId("provider-b"), "generation-7")

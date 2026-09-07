@@ -33,6 +33,78 @@ public data class BitmapStrike(
     }
 }
 
+/** Resource limits enforced before decoding one embedded bitmap strike. */
+public data class BitmapLimits(
+    /** Maximum strikes inspected while selecting the exact requested strike. */
+    public val maxStrikes: Int,
+    /** Maximum decoded bitmap width in pixels. */
+    public val maxWidth: Int,
+    /** Maximum decoded bitmap height in pixels. */
+    public val maxHeight: Int,
+    /** Maximum decoded pixels in one glyph. */
+    public val maxPixels: Int,
+    /** Maximum compressed source bytes read for one bitmap glyph. */
+    public val maxCompressedBytes: Int,
+    /** Maximum decoded pixel bytes retained for one bitmap glyph. */
+    public val maxDecodedBytes: Int,
+) {
+    init {
+        require(maxStrikes > 0) { "maxStrikes must be positive." }
+        require(maxWidth > 0) { "maxWidth must be positive." }
+        require(maxHeight > 0) { "maxHeight must be positive." }
+        require(maxPixels > 0) { "maxPixels must be positive." }
+        require(maxCompressedBytes > 0) { "maxCompressedBytes must be positive." }
+        require(maxDecodedBytes > 0) { "maxDecodedBytes must be positive." }
+    }
+}
+
+/**
+ * Exact bitmap-strike and pixel capabilities accepted by a portable consumer.
+ *
+ * A provider may select only [strike], never a nearby strike chosen implicitly by device scale or
+ * timing. It must reject a table, codec, or bitmap that exceeds [limits] before it returns a
+ * certificate. The profile is immutable and contains no renderer, texture, or native object.
+ */
+public class BitmapProfile(
+    /** Exact bitmap strike requested by the consumer. */
+    public val strike: BitmapStrike,
+    acceptedPixelFormats: List<BitmapPixelFormat>,
+    acceptedColorSpaces: List<GlyphColorSpace>,
+    /** Resource bounds applied to selected bitmap records. */
+    public val limits: BitmapLimits,
+    /** Version of the bitmap representation schema accepted by the consumer. */
+    override val schemaVersion: Int = 1,
+) : GlyphRepresentationProfile {
+    /** Immutable pixel formats accepted by the consumer. */
+    public val acceptedPixelFormats: List<BitmapPixelFormat> = acceptedPixelFormats.immutableListSnapshot()
+    /** Immutable color spaces accepted by the consumer. */
+    public val acceptedColorSpaces: List<GlyphColorSpace> = acceptedColorSpaces.immutableListSnapshot()
+
+    init {
+        require(schemaVersion > 0) { "schemaVersion must be positive." }
+        require(this.acceptedPixelFormats.isNotEmpty()) { "At least one bitmap pixel format must be accepted." }
+        require(this.acceptedColorSpaces.isNotEmpty()) { "At least one bitmap color space must be accepted." }
+        require(this.acceptedPixelFormats.distinct().size == this.acceptedPixelFormats.size) { "Bitmap pixel formats must not repeat." }
+        require(this.acceptedColorSpaces.distinct().size == this.acceptedColorSpaces.size) { "Bitmap color spaces must not repeat." }
+    }
+
+    override fun equals(other: Any?): Boolean =
+        other is BitmapProfile &&
+            strike == other.strike &&
+            acceptedPixelFormats == other.acceptedPixelFormats &&
+            acceptedColorSpaces == other.acceptedColorSpaces &&
+            limits == other.limits &&
+            schemaVersion == other.schemaVersion
+
+    override fun hashCode(): Int {
+        var result = strike.hashCode()
+        result = 31 * result + acceptedPixelFormats.hashCode()
+        result = 31 * result + acceptedColorSpaces.hashCode()
+        result = 31 * result + limits.hashCode()
+        return 31 * result + schemaVersion
+    }
+}
+
 /**
  * Bitmap glyph placement metrics in the coordinate system declared by its source strike.
  *
