@@ -61,6 +61,12 @@ public data class FontFaceCapabilities(
     public val shaping: Boolean,
     /** Whether the face can produce a portable outline route. */
     public val outline: Boolean,
+    /** Whether the face declares a portable paint-graph route. */
+    public val paintGraph: Boolean = false,
+    /** Whether the face declares a decoded portable bitmap route. */
+    public val bitmap: Boolean = false,
+    /** Whether the face declares a separately negotiated native-handle route. */
+    public val nativeHandle: Boolean = false,
 )
 
 /**

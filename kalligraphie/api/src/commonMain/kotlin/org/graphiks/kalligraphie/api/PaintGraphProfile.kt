@@ -17,11 +17,35 @@ public data class PaintGraphLimits(
     public val maxReferences: Int,
     /** Maximum root-to-leaf reference depth. */
     public val maxDepth: Int,
+    /** Maximum source bytes accepted for one paint-table route. */
+    public val maxSourceBytes: Int = 1_048_576,
+    /** Maximum path-bearing paint nodes accepted by this profile. */
+    public val maxPaths: Int = maxNodes,
+    /** Maximum gradient-bearing paint nodes accepted by this profile. */
+    public val maxGradients: Int = 0,
+    /** Maximum CPAL palettes decoded for this route. */
+    public val maxPalettes: Int = 256,
+    /** Maximum entries in every decoded CPAL palette. */
+    public val maxPaletteEntries: Int = 4_096,
+    /** Maximum CPAL color records decoded for this route. */
+    public val maxColorRecords: Int = 65_536,
+    /** Maximum COLR base-glyph records decoded before selecting one glyph. */
+    public val maxBaseGlyphRecords: Int = 65_536,
+    /** Maximum COLR layer records decoded before selecting one glyph. */
+    public val maxLayerRecords: Int = 65_536,
 ) {
     init {
         require(maxNodes > 0) { "maxNodes must be positive." }
         require(maxReferences >= 0) { "maxReferences must be non-negative." }
         require(maxDepth > 0) { "maxDepth must be positive." }
+        require(maxSourceBytes > 0) { "maxSourceBytes must be positive." }
+        require(maxPaths >= 0) { "maxPaths must be non-negative." }
+        require(maxGradients >= 0) { "maxGradients must be non-negative." }
+        require(maxPalettes > 0) { "maxPalettes must be positive." }
+        require(maxPaletteEntries > 0) { "maxPaletteEntries must be positive." }
+        require(maxColorRecords > 0) { "maxColorRecords must be positive." }
+        require(maxBaseGlyphRecords > 0) { "maxBaseGlyphRecords must be positive." }
+        require(maxLayerRecords > 0) { "maxLayerRecords must be positive." }
     }
 }
 
@@ -37,6 +61,8 @@ public class PaintGraphProfile(
     acceptedCompositionModes: List<GlyphPaintCompositionMode>,
     /** Resource limits applied to every accepted graph. */
     public val limits: PaintGraphLimits,
+    /** Bounds enforced while materializing every outline referenced by the graph. */
+    public val outlineProfile: OutlineProfile,
     /** Version of the paint-graph schema accepted by the consumer. */
     override val schemaVersion: Int = 1,
 ) : GlyphRepresentationProfile {
@@ -59,6 +85,8 @@ public class PaintGraphProfile(
         if (paint.schemaVersion != schemaVersion || paint.nodes.size > limits.maxNodes) return false
         val references = paint.nodes.sumOf { node -> node.children.size }
         if (references > limits.maxReferences) return false
+        val paths = paint.nodes.count { node -> node is GlyphPaintNode.SolidOutline }
+        if (paths > limits.maxPaths) return false
         if (paint.nodes.any { node -> node.kind() !in acceptedNodeKinds }) return false
         if (paint.nodes.filterIsInstance<GlyphPaintNode.Group>().any { group -> group.compositionMode !in acceptedCompositionModes }) {
             return false
@@ -71,9 +99,16 @@ public class PaintGraphProfile(
             acceptedNodeKinds == other.acceptedNodeKinds &&
             acceptedCompositionModes == other.acceptedCompositionModes &&
             limits == other.limits &&
+            outlineProfile == other.outlineProfile &&
             schemaVersion == other.schemaVersion
 
-    override fun hashCode(): Int = 31 * (31 * (31 * acceptedNodeKinds.hashCode() + acceptedCompositionModes.hashCode()) + limits.hashCode()) + schemaVersion
+    override fun hashCode(): Int {
+        var result = acceptedNodeKinds.hashCode()
+        result = 31 * result + acceptedCompositionModes.hashCode()
+        result = 31 * result + limits.hashCode()
+        result = 31 * result + outlineProfile.hashCode()
+        return 31 * result + schemaVersion
+    }
 }
 
 private fun GlyphPaintNode.kind(): GlyphPaintNodeKind = when (this) {

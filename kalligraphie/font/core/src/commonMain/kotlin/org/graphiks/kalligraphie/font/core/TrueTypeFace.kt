@@ -20,14 +20,24 @@ import org.graphiks.kalligraphie.api.OpenTypeFontData
 import org.graphiks.kalligraphie.api.FontRenderAssetHandle
 import org.graphiks.kalligraphie.api.FontRenderAssetKey
 import org.graphiks.kalligraphie.api.FontRenderVariantKey
+import org.graphiks.kalligraphie.api.FontRenderVariantSnapshot
+import org.graphiks.kalligraphie.api.GlyphColor
 import org.graphiks.kalligraphie.api.GlyphId
 import org.graphiks.kalligraphie.api.GlyphMetrics
+import org.graphiks.kalligraphie.api.GlyphPaintIR
+import org.graphiks.kalligraphie.api.GlyphPaintNode
+import org.graphiks.kalligraphie.api.PaintGraphProfile
 import org.graphiks.kalligraphie.api.GlyphRepresentation
 import org.graphiks.kalligraphie.api.GlyphResolution
 import org.graphiks.kalligraphie.api.sortedDiagnostics
 import org.graphiks.kalligraphie.api.toDiagnostic
 import org.graphiks.kalligraphie.font.glyph.OutlineMaterializer
+import org.graphiks.kalligraphie.font.sfnt.ColrCpalReader
+import org.graphiks.kalligraphie.font.sfnt.ColrCpalV0Data
+import org.graphiks.kalligraphie.font.sfnt.ColrCpalV0Limits
+import org.graphiks.kalligraphie.font.sfnt.ColrV0Layer
 import org.graphiks.kalligraphie.font.sfnt.ParsedTrueTypeFont
+import org.graphiks.kalligraphie.font.sfnt.slice
 
 internal class TrueTypeFace(
     private val faceId: FontFaceId,
@@ -66,6 +76,7 @@ internal class TrueTypeFace(
                 resource = resource,
                 faceId = id,
                 generation = generation,
+                parsedFont = parsedFont,
             ),
         )
     }
@@ -88,6 +99,7 @@ private data class TrueTypeFontInstance(
     private val resource: PreparedFontResource,
     private val faceId: FontFaceId,
     private val generation: FontCatalogGeneration,
+    private val parsedFont: ParsedTrueTypeFont,
 ) : FontInstance {
     override fun resolveGlyph(codePoint: Int): FontOperationResult<GlyphResolution> {
         return resource.preparedFont.resolveGlyph(codePoint)
@@ -112,24 +124,28 @@ private data class TrueTypeFontInstance(
         resolver: FontAssetResolverHandle,
         variant: FontRenderVariantKey,
         requirements: FontAccessRequirementsSnapshot,
+    ): FontOperationResult<FontRenderAssetHandle> =
+        if (variant == FontRenderVariantKey.default) {
+            acquireRenderAsset(resolver, FontRenderVariantSnapshot.default, requirements)
+        } else {
+            failure(
+                FontError.UnsupportedRepresentationProfile(
+                    "A full render-variant snapshot is required for a non-default embedded asset.",
+                    FontDiagnosticLocation.FaceId(faceId),
+                ),
+            )
+        }
+
+    override fun acquireRenderAsset(
+        resolver: FontAssetResolverHandle,
+        renderVariant: FontRenderVariantSnapshot,
+        requirements: FontAccessRequirementsSnapshot,
     ): FontOperationResult<FontRenderAssetHandle> {
-        val outlineProfile = requirements.outlineProfile
-        if (requirements.mode != FontAccessRequirementsSnapshot.Mode.RENDERABLE || outlineProfile == null || outlineProfile.schemaVersion != 1) {
-            return failure(
-                FontError.UnsupportedRepresentationProfile(
-                    "A schemaVersion=1 renderable outline profile is required.",
-                    FontDiagnosticLocation.FaceId(faceId),
-                ),
-            )
+        if (requirements.mode != FontAccessRequirementsSnapshot.Mode.RENDERABLE) {
+            return failure(FontError.UnsupportedRepresentationProfile("A renderable access mode is required.", FontDiagnosticLocation.FaceId(faceId)))
         }
-        if (variant != FontRenderVariantKey.default) {
-            return failure(
-                FontError.UnsupportedRepresentationProfile(
-                    "Variant render assets are not supported by this embedded TrueType face.",
-                    FontDiagnosticLocation.FaceId(faceId),
-                ),
-            )
-        }
+        val profile = requirements.acceptedProfiles.firstOrNull()
+            ?: return failure(FontError.UnsupportedRepresentationProfile("At least one representation profile is required.", FontDiagnosticLocation.FaceId(faceId)))
         if (resolver !is EmbeddedFontAssetResolver) {
             return failure(FontError.InvalidFontData("Resolver was not opened by the embedded TrueType catalog.", FontDiagnosticLocation.FaceId(faceId)))
         }
@@ -139,21 +155,107 @@ private data class TrueTypeFontInstance(
         val lease = resolver.acquireAssetLease(faceId)
             ?: return failure(FontError.ResourceClosed("Asset resolver is closed."))
         return try {
-            val handle = TrueTypeRenderAssetHandle(
-                faceId = faceId,
-                resourceLease = lease,
-                key = FontRenderAssetKey(
-                    fontInstanceKey = key,
-                    variant = variant,
-                    outlineProfile = outlineProfile,
-                    generation = resolver.generation,
-                ),
-            )
-            FontOperationResult.Success(handle)
+            val outcome = when (profile) {
+                is org.graphiks.kalligraphie.api.OutlineProfile -> {
+                    if (renderVariant != FontRenderVariantSnapshot.default || profile.schemaVersion != 1) {
+                        failure(
+                            FontError.UnsupportedRepresentationProfile(
+                                "Schema version 1 outline assets accept only the default render variant.",
+                                FontDiagnosticLocation.FaceId(faceId),
+                            ),
+                        )
+                    } else {
+                        FontOperationResult.Success(
+                            TrueTypeRenderAssetHandle(
+                                faceId = faceId,
+                                resourceLease = lease,
+                                key = FontRenderAssetKey(key, renderVariant.key, profile, resolver.generation),
+                            ),
+                        )
+                    }
+                }
+
+                is PaintGraphProfile -> {
+                    if (profile.schemaVersion != 1) {
+                        failure(FontError.UnsupportedRepresentationProfile("Only paint-graph schema version 1 is supported.", FontDiagnosticLocation.FaceId(faceId)))
+                    } else {
+                        when (val colorData = readColrCpalV0(profile)) {
+                            is FontOperationResult.Success -> {
+                                val paletteIndex = renderVariant.cpalPaletteIndex ?: 0
+                                if (paletteIndex !in 0 until colorData.value.paletteCount) {
+                                    failure(
+                                        FontError.UnsupportedRepresentationProfile(
+                                            "The selected CPAL palette is unavailable in this font.",
+                                            FontDiagnosticLocation.FaceId(faceId),
+                                        ),
+                                    )
+                                } else {
+                                    FontOperationResult.Success(
+                                        ColrV0RenderAssetHandle(
+                                            faceId = faceId,
+                                            resourceLease = lease,
+                                            key = FontRenderAssetKey(
+                                                fontInstanceKey = key,
+                                                variant = renderVariant.key,
+                                                representationProfile = profile,
+                                                generation = resolver.generation,
+                                            ),
+                                            profile = profile,
+                                            colorData = colorData.value,
+                                            paletteIndex = paletteIndex,
+                                            foregroundColor = renderVariant.foregroundColor ?: GlyphColor(0, 0, 0),
+                                        ),
+                                    )
+                                }
+                            }
+
+                            is FontOperationResult.Failure -> colorData
+                            is FontOperationResult.Cancelled -> colorData
+                        }
+                    }
+                }
+
+                else -> failure(
+                    FontError.UnsupportedRepresentationProfile(
+                        "The embedded TrueType provider supports only outline and COLR version 0 paint profiles.",
+                        FontDiagnosticLocation.FaceId(faceId),
+                    ),
+                )
+            }
+            if (outcome !is FontOperationResult.Success) lease.release()
+            outcome
         } catch (throwable: Throwable) {
             lease.release()
             throw throwable
         }
+    }
+
+    private fun readColrCpalV0(profile: PaintGraphProfile): FontOperationResult<ColrCpalV0Data> {
+        val colrRecord = parsedFont.tableRecords["COLR"]
+            ?: return failure(FontError.UnsupportedRepresentationProfile("The font has no COLR table.", FontDiagnosticLocation.FaceId(faceId)))
+        val cpalRecord = parsedFont.tableRecords["CPAL"]
+            ?: return failure(FontError.UnsupportedRepresentationProfile("The font has no CPAL table.", FontDiagnosticLocation.FaceId(faceId)))
+        val totalBytes = colrRecord.length + cpalRecord.length
+        if (totalBytes < 0L || totalBytes > profile.limits.maxSourceBytes.toLong()) {
+            return failure(FontError.ResourceLimitExceeded("COLR and CPAL source-byte limit exceeded.", FontDiagnosticLocation.FaceId(faceId)))
+        }
+        val sourceBytes = resource.preparedFont.copySourceBytes()
+        val colr = slice(sourceBytes, colrRecord)
+            ?: return failure(FontError.InvalidFontData("COLR table exceeds embedded source bytes.", FontDiagnosticLocation.Table("COLR")))
+        val cpal = slice(sourceBytes, cpalRecord)
+            ?: return failure(FontError.InvalidFontData("CPAL table exceeds embedded source bytes.", FontDiagnosticLocation.Table("CPAL")))
+        return ColrCpalReader.read(
+            colrTable = colr,
+            cpalTable = cpal,
+            limits = ColrCpalV0Limits(
+                maxPalettes = profile.limits.maxPalettes,
+                maxPaletteEntries = profile.limits.maxPaletteEntries,
+                maxColorRecords = profile.limits.maxColorRecords,
+                maxBaseGlyphRecords = profile.limits.maxBaseGlyphRecords,
+                maxLayerRecords = profile.limits.maxLayerRecords,
+            ),
+            glyphCount = parsedFont.metadata.glyphCount,
+        )
     }
 
 }
@@ -210,6 +312,110 @@ internal class TrueTypeRenderAssetHandle(
                 return FontOperationResult.Cancelled()
             }
             OutlineMaterializer.materialize(outline, profile, cancellationToken)
+        } finally {
+            lease.release()
+        }
+    }
+
+    override fun close(): FontOperationResult<Unit> {
+        lifecycle.close()
+        return FontOperationResult.Success(Unit)
+    }
+
+    private fun releaseResourceLease() {
+        resourceLease?.release()
+        resourceLease = null
+    }
+}
+
+/** Asset handle for the explicitly supported COLR version 0 and CPAL version 0 paint route. */
+internal class ColrV0RenderAssetHandle(
+    override val faceId: FontFaceId,
+    private var resourceLease: PreparedFontResourceLease?,
+    override val key: FontRenderAssetKey,
+    private val profile: PaintGraphProfile,
+    private val colorData: ColrCpalV0Data,
+    private val paletteIndex: Int,
+    private val foregroundColor: GlyphColor,
+) : FontRenderAssetHandle {
+    private val palette: List<GlyphColor> = colorData.palette(paletteIndex)
+    private val lifecycle = FontHandleLifecycle(::releaseResourceLease)
+
+    override fun detach(): FontOperationResult<FontRenderAssetHandle> {
+        val lease = lifecycle.acquireLease()
+            ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+        return try {
+            val detachedResourceLease = resourceLease?.resource?.acquireLease()
+                ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+            FontOperationResult.Success(
+                ColrV0RenderAssetHandle(
+                    faceId = faceId,
+                    resourceLease = detachedResourceLease,
+                    key = key.copy(representationProfile = profile),
+                    profile = profile,
+                    colorData = colorData,
+                    paletteIndex = paletteIndex,
+                    foregroundColor = foregroundColor,
+                ),
+            )
+        } finally {
+            lease.release()
+        }
+    }
+
+    override fun resolveGlyph(request: FontGlyphRequest): FontOperationResult<GlyphRepresentation> =
+        resolveGlyph(request, CancellationToken.none)
+
+    override fun resolveGlyph(
+        request: FontGlyphRequest,
+        cancellationToken: CancellationToken,
+    ): FontOperationResult<GlyphRepresentation> {
+        val lease = lifecycle.acquireLease()
+            ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+        return try {
+            if (cancellationToken.isCancellationRequested()) return FontOperationResult.Cancelled()
+            val preparedFont = resourceLease?.preparedFont
+                ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+            val layers = colorData.layersFor(GlyphId(request.glyphId))
+            val materializedGlyphIds = if (layers.isEmpty()) {
+                listOf(ColrV0Layer(GlyphId(request.glyphId), ColrV0Layer.foregroundColorIndex))
+            } else {
+                layers
+            }
+            val nodes = ArrayList<GlyphPaintNode>(materializedGlyphIds.size + 1)
+            for (layer in materializedGlyphIds) {
+                if (cancellationToken.isCancellationRequested()) return FontOperationResult.Cancelled()
+                val outline = when (val result = preparedFont.readGlyphOutline(layer.glyphId, profile.outlineProfile, cancellationToken)) {
+                    is FontOperationResult.Success -> result.value
+                    is FontOperationResult.Failure -> return result
+                    is FontOperationResult.Cancelled -> return result
+                }
+                val representation = when (val result = OutlineMaterializer.materialize(outline, profile.outlineProfile, cancellationToken)) {
+                    is FontOperationResult.Success -> result.value
+                    is FontOperationResult.Failure -> return result
+                    is FontOperationResult.Cancelled -> return result
+                }
+                val outlineIr = (representation as? GlyphRepresentation.Outline)?.outline ?: continue
+                val color = if (layer.paletteIndex == ColrV0Layer.foregroundColorIndex) foregroundColor else palette[layer.paletteIndex]
+                nodes += GlyphPaintNode.SolidOutline(outlineIr, color)
+            }
+            if (nodes.isEmpty()) return FontOperationResult.Success(GlyphRepresentation.Empty)
+            val root = if (nodes.size == 1) {
+                0
+            } else {
+                nodes += GlyphPaintNode.Group((nodes.indices).toList())
+                nodes.lastIndex
+            }
+            val paint = GlyphPaintIR(schemaVersion = profile.schemaVersion, rootNode = root, nodes = nodes)
+            if (!profile.accepts(paint)) {
+                return failure(
+                    FontError.ResourceLimitExceeded(
+                        "COLR version 0 paint graph exceeds the selected profile.",
+                        FontDiagnosticLocation.Glyph(request.glyphId),
+                    ),
+                )
+            }
+            FontOperationResult.Success(GlyphRepresentation.Paint(paint))
         } finally {
             lease.release()
         }
