@@ -19,9 +19,21 @@ import org.graphiks.kalligraphie.api.LayoutUnit
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 
 class EbdtFormatOneGlyphRepresentationTest {
+    @Test
+    fun doesNotAdvertiseBitmapCapabilityWhenTheEbdtHeaderUsesAnUnsupportedVersion() {
+        val corrupted = fixtureBytes().also { bytes ->
+            bytes[tableOffset(bytes, "EBDT") + 3] = 1
+        }
+
+        val catalog = success(Kalligraphie.embedded(corrupted, FontSourceProvenance("Unsupported EBDT header")))
+
+        assertFalse(catalog.faces.single().capabilities.bitmap)
+    }
+
     @Test
     fun decodesSkiaEbdtFormatOneGrinningFaceAtTheExplicitSixteenPixelStrike() {
         val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
@@ -184,6 +196,26 @@ class EbdtFormatOneGlyphRepresentationTest {
         checkNotNull(javaClass.getResourceAsStream("/fonts/skia-ebdt-format1/ebdt_fmt1.ttf")) {
             "Skia EBDT format 1 fixture is missing"
         }.use { input -> input.readBytes() }
+
+    private fun tableOffset(font: ByteArray, tag: String): Int {
+        val tableCount = readUInt16(font, 4)
+        repeat(tableCount) { index ->
+            val recordOffset = 12 + index * 16
+            if ((0 until 4).all { tagIndex -> font[recordOffset + tagIndex].toInt().toChar() == tag[tagIndex] }) {
+                return readUInt32(font, recordOffset + 8)
+            }
+        }
+        error("Missing $tag table in EBDT fixture.")
+    }
+
+    private fun readUInt16(bytes: ByteArray, offset: Int): Int =
+        ((bytes[offset].toInt() and 0xFF) shl 8) or (bytes[offset + 1].toInt() and 0xFF)
+
+    private fun readUInt32(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xFF shl 24) or
+            ((bytes[offset + 1].toInt() and 0xFF) shl 16) or
+            ((bytes[offset + 2].toInt() and 0xFF) shl 8) or
+            (bytes[offset + 3].toInt() and 0xFF)
 
     private fun <T> success(result: FontOperationResult<T>): T =
         assertIs<FontOperationResult.Success<T>>(result).value

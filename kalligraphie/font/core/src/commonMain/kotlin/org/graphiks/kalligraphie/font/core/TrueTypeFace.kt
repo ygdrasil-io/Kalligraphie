@@ -48,6 +48,7 @@ internal class TrueTypeFace(
     private val parsedFont: ParsedTrueTypeFont,
     private val resource: PreparedFontResource,
     private val paintGraphSupported: Boolean,
+    private val bitmapRouteSupported: Boolean,
 ) : FontFace {
     override val metadata: FontFaceMetadata = parsedFont.metadata
     override val id: FontFaceId = faceId
@@ -82,6 +83,7 @@ internal class TrueTypeFace(
                 generation = generation,
                 parsedFont = parsedFont,
                 paintGraphSupported = paintGraphSupported,
+                bitmapRouteSupported = bitmapRouteSupported,
             ),
         )
     }
@@ -106,6 +108,7 @@ internal data class TrueTypeFontInstance(
     private val generation: FontCatalogGeneration,
     private val parsedFont: ParsedTrueTypeFont,
     private val paintGraphSupported: Boolean,
+    private val bitmapRouteSupported: Boolean,
 ) : FontInstance {
     override fun resolveGlyph(codePoint: Int): FontOperationResult<GlyphResolution> {
         return resource.preparedFont.resolveGlyph(codePoint)
@@ -275,9 +278,7 @@ internal data class TrueTypeFontInstance(
                     parsedFont.tableRecords.containsKey("loca")
             is PaintGraphProfile -> profile.schemaVersion == 1 && paintGraphSupported
             is BitmapProfile ->
-                profile.schemaVersion == 1 &&
-                    parsedFont.tableRecords.containsKey("EBLC") &&
-                    parsedFont.tableRecords.containsKey("EBDT")
+                profile.schemaVersion == 1 && bitmapRouteSupported
             else -> false
         }
 

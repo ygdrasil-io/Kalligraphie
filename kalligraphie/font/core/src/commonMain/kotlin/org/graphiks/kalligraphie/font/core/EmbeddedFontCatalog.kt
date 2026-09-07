@@ -25,6 +25,7 @@ import org.graphiks.kalligraphie.api.sortedDiagnostics
 import org.graphiks.kalligraphie.api.toDiagnostic
 import org.graphiks.kalligraphie.font.scaler.PreparedTrueTypeFont
 import org.graphiks.kalligraphie.font.sfnt.ColrCpalReader
+import org.graphiks.kalligraphie.font.sfnt.EbdtFormatOneReader
 import org.graphiks.kalligraphie.font.sfnt.ParsedTrueTypeFont
 import org.graphiks.kalligraphie.font.sfnt.slice
 import kotlin.concurrent.atomics.AtomicInt
@@ -49,6 +50,7 @@ public class EmbeddedFontCatalog(
     private val resources: Map<FontFaceId, PreparedFontResource>
     private val parsedFonts: Map<FontFaceId, ParsedTrueTypeFont>
     private val paintGraphSupportedFaces: Set<FontFaceId>
+    private val bitmapRouteSupportedFaces: Set<FontFaceId>
     private val resolvedFaces: Map<FontFaceId, TrueTypeFace>
 
     /** Stable records for every captured embedded face, in supplied order. */
@@ -73,6 +75,9 @@ public class EmbeddedFontCatalog(
         paintGraphSupportedFaces = ids.filter { id ->
             supportsColrCpalV0(resources.getValue(id), parsedFonts.getValue(id))
         }.toSet()
+        bitmapRouteSupportedFaces = ids.filter { id ->
+            supportsEbdtFormatOneVersionTwoHeaders(resources.getValue(id), parsedFonts.getValue(id))
+        }.toSet()
         resolvedFaces = ids.associateWith { id ->
             TrueTypeFace(
                 faceId = id,
@@ -80,6 +85,7 @@ public class EmbeddedFontCatalog(
                 parsedFont = parsedFonts.getValue(id),
                 resource = resources.getValue(id),
                 paintGraphSupported = id in paintGraphSupportedFaces,
+                bitmapRouteSupported = id in bitmapRouteSupportedFaces,
             )
         }
         faces = ids.map { id ->
@@ -91,8 +97,7 @@ public class EmbeddedFontCatalog(
                     shaping = true,
                     outline = true,
                     paintGraph = id in paintGraphSupportedFaces,
-                    bitmap = parsedFonts.getValue(id).tableRecords.containsKey("EBLC") &&
-                        parsedFonts.getValue(id).tableRecords.containsKey("EBDT"),
+                    bitmap = id in bitmapRouteSupportedFaces,
                 ),
             )
         }
@@ -160,9 +165,7 @@ public class EmbeddedFontCatalog(
             is org.graphiks.kalligraphie.api.PaintGraphProfile ->
                 schemaVersion == 1 && faceId in paintGraphSupportedFaces
             is org.graphiks.kalligraphie.api.BitmapProfile ->
-                schemaVersion == 1 &&
-                    parsedFonts.getValue(faceId).tableRecords.containsKey("EBLC") &&
-                    parsedFonts.getValue(faceId).tableRecords.containsKey("EBDT")
+                schemaVersion == 1 && faceId in bitmapRouteSupportedFaces
             else -> false
         }
 
@@ -184,6 +187,18 @@ private fun supportsColrCpalV0(
         cpalTable = cpal,
         glyphCount = parsedFont.metadata.glyphCount,
     )
+}
+
+private fun supportsEbdtFormatOneVersionTwoHeaders(
+    resource: PreparedFontResource,
+    parsedFont: ParsedTrueTypeFont,
+): Boolean {
+    val eblcRecord = parsedFont.tableRecords["EBLC"] ?: return false
+    val ebdtRecord = parsedFont.tableRecords["EBDT"] ?: return false
+    val sourceBytes = resource.preparedFont.copySourceBytes()
+    val eblc = slice(sourceBytes, eblcRecord) ?: return false
+    val ebdt = slice(sourceBytes, ebdtRecord) ?: return false
+    return EbdtFormatOneReader.hasSupportedVersionTwoHeaders(eblc, ebdt)
 }
 
 /**
@@ -243,8 +258,9 @@ internal class EmbeddedFontAssetResolver(
             resource = resource,
             faceId = face,
             generation = generation,
-            parsedFont = parsedFont,
-            paintGraphSupported = supportsColrCpalV0(resource, parsedFont),
+        parsedFont = parsedFont,
+        paintGraphSupported = supportsColrCpalV0(resource, parsedFont),
+        bitmapRouteSupported = supportsEbdtFormatOneVersionTwoHeaders(resource, parsedFont),
         ).acquireRenderAsset(
             resolver = this,
             renderVariant = variant,
@@ -275,8 +291,10 @@ internal class EmbeddedFontAssetResolver(
                     parsedFont.tableRecords.containsKey("COLR") && parsedFont.tableRecords.containsKey("CPAL")
             is org.graphiks.kalligraphie.api.BitmapProfile ->
                 key.variant == FontRenderVariantKey.default &&
-                    profile.schemaVersion == 1 &&
-                    parsedFont.tableRecords.containsKey("EBLC") && parsedFont.tableRecords.containsKey("EBDT")
+                profile.schemaVersion == 1 &&
+                    resources[instance.face]?.let { resource ->
+                        supportsEbdtFormatOneVersionTwoHeaders(resource, parsedFont)
+                    } == true
             else -> false
         }
         return representationIsSupported &&

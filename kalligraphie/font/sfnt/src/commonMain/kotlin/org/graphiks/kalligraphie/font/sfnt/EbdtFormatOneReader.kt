@@ -69,6 +69,22 @@ public class EbdtFormatOneData internal constructor(
 /** Reads the declared EBDT format-1 bitmap route into portable bounded records. */
 public object EbdtFormatOneReader {
     /**
+     * Reports whether both bitmap tables declare the only versions this route can open.
+     *
+     * This inexpensive check validates the minimum header length and the EBLC/EBDT version pair
+     * only. Call [read] with an exact [BitmapProfile] to validate a strike, index subtables,
+     * image records, codecs, and resource limits before issuing a certificate.
+     */
+    public fun hasSupportedVersionTwoHeaders(
+        eblcTable: ByteArray,
+        ebdtTable: ByteArray,
+    ): Boolean =
+        eblcTable.size >= EBLC_HEADER_LENGTH &&
+            ebdtTable.size >= EBDT_HEADER_LENGTH &&
+            readUInt32(eblcTable, 0) == EBLC_VERSION_2 &&
+            readUInt32(ebdtTable, 0) == EBDT_VERSION_2
+
+    /**
      * Parses the exact strike requested by [profile].
      *
      * The operation validates every index subtable and every image record in the selected strike
