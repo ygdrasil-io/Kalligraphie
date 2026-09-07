@@ -97,7 +97,7 @@ public class PaintGraphProfile(
         if (paint.nodes.filterIsInstance<GlyphPaintNode.Group>().any { group -> group.compositionMode !in acceptedCompositionModes }) {
             return false
         }
-        return paint.depthFromRoot() <= limits.maxDepth
+        return !paint.exceedsDepth(limits.maxDepth)
     }
 
     override fun equals(other: Any?): Boolean =
@@ -132,7 +132,23 @@ internal fun OutlineProfile.acceptsOutline(outline: GlyphOutlineIR): Boolean =
         outline.limits.maxCompositeDepth <= maxCompositeDepth &&
         outline.limits.maxCompositeComponents <= maxCompositeComponents
 
-private fun GlyphPaintIR.depthFromRoot(): Int {
-    fun depth(index: Int): Int = 1 + (nodes[index].children.maxOfOrNull(::depth) ?: 0)
-    return depth(rootNode)
+private fun GlyphPaintIR.exceedsDepth(maximum: Int): Boolean {
+    val greatestVisitedDepth = IntArray(nodes.size)
+    val pendingNodes = ArrayDeque<Int>()
+    val pendingDepths = ArrayDeque<Int>()
+    pendingNodes.addLast(rootNode)
+    pendingDepths.addLast(1)
+
+    while (pendingNodes.isNotEmpty()) {
+        val node = pendingNodes.removeLast()
+        val depth = pendingDepths.removeLast()
+        if (depth > maximum) return true
+        if (depth <= greatestVisitedDepth[node]) continue
+        greatestVisitedDepth[node] = depth
+        nodes[node].children.forEach { child ->
+            pendingNodes.addLast(child)
+            pendingDepths.addLast(depth + 1)
+        }
+    }
+    return false
 }

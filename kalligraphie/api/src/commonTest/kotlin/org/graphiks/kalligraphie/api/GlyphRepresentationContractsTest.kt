@@ -231,6 +231,81 @@ class GlyphRepresentationContractsTest {
     }
 
     @Test
+    fun paintProfileRejectsADeepAcyclicGraphWithoutExhaustingTheCallStack() {
+        val nodeCount = 20_000
+        val outline = GlyphOutlineIR(
+            glyphId = 12,
+            unitsPerEm = 1_000,
+            bounds = DesignBounds.empty,
+            commands = emptyList(),
+        )
+        val paint = GlyphPaintIR(
+            schemaVersion = 1,
+            rootNode = 0,
+            nodes = List(nodeCount) { index ->
+                if (index == nodeCount - 1) {
+                    GlyphPaintNode.SolidOutline(outline, GlyphColor(0, 0, 0))
+                } else {
+                    GlyphPaintNode.Group(children = listOf(index + 1))
+                }
+            },
+        )
+        val profile = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE, GlyphPaintNodeKind.GROUP),
+            acceptedCompositionModes = listOf(GlyphPaintCompositionMode.SOURCE_OVER),
+            limits = PaintGraphLimits(maxNodes = nodeCount, maxReferences = nodeCount, maxDepth = 1),
+            outlineProfile = outlineProfile(),
+        )
+
+        assertFalse(profile.accepts(paint))
+    }
+
+    @Test
+    fun profileKeyFactoriesEncodeEveryPaintAndBitmapRequirement() {
+        val paint = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE, GlyphPaintNodeKind.GROUP),
+            acceptedCompositionModes = listOf(GlyphPaintCompositionMode.SOURCE_OVER),
+            limits = PaintGraphLimits(
+                maxNodes = 3,
+                maxReferences = 2,
+                maxDepth = 2,
+                maxSourceBytes = 10,
+                maxPaths = 1,
+                maxGradients = 0,
+                maxPalettes = 2,
+                maxPaletteEntries = 3,
+                maxColorRecords = 4,
+                maxDecodedPaletteBytes = 5,
+                maxBaseGlyphRecords = 6,
+                maxLayerRecords = 7,
+            ),
+            outlineProfile = outlineProfile(),
+        )
+        val bitmap = BitmapProfile(
+            strike = BitmapStrike(16, 17),
+            acceptedPixelFormats = listOf(BitmapPixelFormat.ALPHA_8),
+            acceptedColorSpaces = listOf(GlyphColorSpace.SRGB),
+            limits = BitmapLimits(
+                maxStrikes = 1,
+                maxWidth = 2,
+                maxHeight = 3,
+                maxPixels = 4,
+                maxCompressedBytes = 5,
+                maxDecodedBytes = 6,
+            ),
+        )
+
+        assertEquals(
+            "nodes=SOLID_OUTLINE,GROUP;composition=SOURCE_OVER;limits=3,2,2,10,1,0,2,3,4,5,6,7;outline=1024,32,128,8,32",
+            GlyphRepresentationProfileKey.paintGraph(paint).parameters,
+        )
+        assertEquals(
+            "strike=16,17;pixels=ALPHA_8;colors=SRGB;limits=1,2,3,4,5,6",
+            GlyphRepresentationProfileKey.bitmap(bitmap).parameters,
+        )
+    }
+
+    @Test
     fun generationsWithTheSameTokenRemainDistinctAcrossProviderDomains() {
         val left = FontCatalogGeneration(FontProviderId("provider-a"), "generation-7")
         val right = FontCatalogGeneration(FontProviderId("provider-b"), "generation-7")

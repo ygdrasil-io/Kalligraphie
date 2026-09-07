@@ -41,13 +41,33 @@ public data class GlyphRepresentationProfileKey(
             GlyphRepresentationProfileKey(
                 kind = GlyphRepresentationProfileKind.OUTLINE,
                 schemaVersion = profile.schemaVersion,
+                parameters = profile.canonicalOutlineLimits(),
+            )
+
+        /** Returns the complete identity of one portable paint-graph profile. */
+        public fun paintGraph(profile: PaintGraphProfile): GlyphRepresentationProfileKey =
+            GlyphRepresentationProfileKey(
+                kind = GlyphRepresentationProfileKind.PAINT_GRAPH,
+                schemaVersion = profile.schemaVersion,
                 parameters = listOf(
-                    profile.maxBytes,
-                    profile.maxContours,
-                    profile.maxPoints,
-                    profile.maxCompositeDepth,
-                    profile.maxCompositeComponents,
-                ).joinToString(":"),
+                    "nodes=${profile.acceptedNodeKinds.joinToString(",")}",
+                    "composition=${profile.acceptedCompositionModes.joinToString(",")}",
+                    "limits=${profile.limits.canonicalPaintLimits()}",
+                    "outline=${profile.outlineProfile.canonicalOutlineLimits(",")}",
+                ).joinToString(";"),
+            )
+
+        /** Returns the complete identity of one portable bitmap profile. */
+        public fun bitmap(profile: BitmapProfile): GlyphRepresentationProfileKey =
+            GlyphRepresentationProfileKey(
+                kind = GlyphRepresentationProfileKind.BITMAP,
+                schemaVersion = profile.schemaVersion,
+                parameters = listOf(
+                    "strike=${profile.strike.pixelsPerEmX},${profile.strike.pixelsPerEmY}",
+                    "pixels=${profile.acceptedPixelFormats.joinToString(",")}",
+                    "colors=${profile.acceptedColorSpaces.joinToString(",")}",
+                    "limits=${profile.limits.canonicalBitmapLimits()}",
+                ).joinToString(";"),
             )
 
         /** Returns the complete identity of one native-handle profile. */
@@ -59,6 +79,41 @@ public data class GlyphRepresentationProfileKey(
             )
     }
 }
+
+private fun OutlineProfile.canonicalOutlineLimits(separator: CharSequence = ":"): String =
+    listOf(
+        maxBytes,
+        maxContours,
+        maxPoints,
+        maxCompositeDepth,
+        maxCompositeComponents,
+    ).joinToString(separator)
+
+private fun PaintGraphLimits.canonicalPaintLimits(): String =
+    listOf(
+        maxNodes,
+        maxReferences,
+        maxDepth,
+        maxSourceBytes,
+        maxPaths,
+        maxGradients,
+        maxPalettes,
+        maxPaletteEntries,
+        maxColorRecords,
+        maxDecodedPaletteBytes,
+        maxBaseGlyphRecords,
+        maxLayerRecords,
+    ).joinToString(",")
+
+private fun BitmapLimits.canonicalBitmapLimits(): String =
+    listOf(
+        maxStrikes,
+        maxWidth,
+        maxHeight,
+        maxPixels,
+        maxCompressedBytes,
+        maxDecodedBytes,
+    ).joinToString(",")
 
 /**
  * Stable cache identity of one glyph representation request.
