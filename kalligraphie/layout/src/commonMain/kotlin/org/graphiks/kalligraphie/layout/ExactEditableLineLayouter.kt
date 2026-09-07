@@ -862,6 +862,20 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                                     }
                                     GlyphMaterializationRoute.OUTLINE
                                 }
+
+                                is GlyphRepresentation.Paint,
+                                is GlyphRepresentation.Bitmap,
+                                -> {
+                                    result = CertificationResult.Failure(
+                                        EditableLineError.FontMaterializationFailure(
+                                            org.graphiks.kalligraphie.api.FontError.UnsupportedRepresentationProfile(
+                                                "An outline-only layout asset returned a non-outline glyph representation.",
+                                            ),
+                                        ),
+                                        emptyList(),
+                                    )
+                                    break@certification
+                                }
                             }
                             certificates[GlyphPosition(placement.visualOrder, glyphIndex)] = GlyphMaterializationCertificate(
                                 assetKey = asset.key,

@@ -13,6 +13,7 @@ import org.graphiks.kalligraphie.api.FontFaceCapabilities
 import org.graphiks.kalligraphie.api.FontFaceId
 import org.graphiks.kalligraphie.api.FontFaceRecord
 import org.graphiks.kalligraphie.api.FontOperationResult
+import org.graphiks.kalligraphie.api.FontProviderId
 import org.graphiks.kalligraphie.api.FontRenderAssetHandle
 import org.graphiks.kalligraphie.api.FontRenderAssetKey
 import org.graphiks.kalligraphie.api.FontRenderVariantKey
@@ -90,7 +91,10 @@ public class EmbeddedFontCatalog(
         source: FontSource,
         parsedFont: ParsedTrueTypeFont,
     ) : this(
-        generation = FontCatalogGeneration("embedded-${(source.id as FontSourceId.Portable).contentDigest.value}"),
+        generation = FontCatalogGeneration(
+            provider = FontProviderId("embedded-opentype"),
+            value = "embedded-${(source.id as FontSourceId.Portable).contentDigest.value}",
+        ),
         entries = listOf(EmbeddedFontCatalogEntry(source, parsedFont)),
     )
 

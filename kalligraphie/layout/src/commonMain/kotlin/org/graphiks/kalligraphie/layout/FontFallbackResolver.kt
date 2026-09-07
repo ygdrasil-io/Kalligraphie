@@ -447,6 +447,10 @@ internal object FontFallbackResolver {
                             is GlyphRepresentation.Outline -> if (representation.outline.glyphId != glyph.glyphId.value) {
                                 validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved outline does not match the final shaped glyph identifier.")))
                             }
+                            is GlyphRepresentation.Paint,
+                            is GlyphRepresentation.Bitmap -> validation = Validation.Rejected(
+                                listOf(rejectionDiagnostic("An outline-only fallback validation asset returned a non-outline representation.")),
+                            )
                         }
 
                         is FontOperationResult.Failure -> validation = Validation.Rejected(
