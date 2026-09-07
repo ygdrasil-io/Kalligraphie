@@ -92,10 +92,10 @@ public class GlyphPaintIR(
                 "Paint node $index references a node outside the graph."
             }
         }
-        validateAcyclic(rootNode)
+        validateAcyclic()
     }
 
-    private fun validateAcyclic(root: Int) {
+    private fun validateAcyclic() {
         val visiting = BooleanArray(nodes.size)
         val visited = BooleanArray(nodes.size)
 
@@ -108,7 +108,7 @@ public class GlyphPaintIR(
             visited[index] = true
         }
 
-        visit(root)
+        nodes.indices.forEach(::visit)
     }
 
     override fun equals(other: Any?): Boolean =

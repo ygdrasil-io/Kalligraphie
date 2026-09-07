@@ -61,6 +61,28 @@ class GlyphRepresentationContractsTest {
     }
 
     @Test
+    fun paintGraphsRejectCyclesOutsideThePublishedRoot() {
+        val outline = GlyphOutlineIR(
+            glyphId = 0,
+            unitsPerEm = 1_000,
+            bounds = DesignBounds.empty,
+            commands = emptyList(),
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            GlyphPaintIR(
+                schemaVersion = 1,
+                rootNode = 0,
+                nodes = listOf(
+                    GlyphPaintNode.SolidOutline(outline, GlyphColor(0, 0, 0)),
+                    GlyphPaintNode.Group(children = listOf(2)),
+                    GlyphPaintNode.Group(children = listOf(1)),
+                ),
+            )
+        }
+    }
+
+    @Test
     fun representationKeysKeepPaletteVariantsInSeparateCacheDomains() {
         val profile = outlineProfile()
         val assetKey = FontRenderAssetKey(
