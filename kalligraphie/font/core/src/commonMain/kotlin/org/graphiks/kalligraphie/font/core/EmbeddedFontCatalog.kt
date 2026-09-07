@@ -82,8 +82,9 @@ public class EmbeddedFontCatalog(
                     shaping = true,
                     outline = parsedFonts.getValue(id).tableRecords.containsKey("glyf") &&
                         parsedFonts.getValue(id).tableRecords.containsKey("loca"),
-                    paintGraph = parsedFonts.getValue(id).tableRecords.containsKey("COLR") &&
-                        parsedFonts.getValue(id).tableRecords.containsKey("CPAL"),
+                    paintGraph = (parsedFonts.getValue(id).tableRecords.containsKey("COLR") &&
+                        parsedFonts.getValue(id).tableRecords.containsKey("CPAL")) ||
+                        parsedFonts.getValue(id).tableRecords.containsKey("SVG "),
                     bitmap = parsedFonts.getValue(id).tableRecords.containsKey("EBLC") &&
                         parsedFonts.getValue(id).tableRecords.containsKey("EBDT"),
                 ),
@@ -131,7 +132,7 @@ public class EmbeddedFontCatalog(
                         code = "font.unsupported-representation-profile",
                         severity = FontDiagnosticSeverity.ERROR,
                         location = FontDiagnosticLocation.Source,
-                        message = "Only LAYOUT_ONLY, schemaVersion=1 outlines, declared COLR/CPAL version 0 paint profiles, and declared EBDT format 1 bitmap profiles are supported.",
+                        message = "Only LAYOUT_ONLY, schemaVersion=1 outlines, declared COLR/CPAL version 0 or SVG version 0 paint profiles, and declared EBDT format 1 bitmap profiles are supported.",
                     ),
                 ),
             )
@@ -149,8 +150,9 @@ public class EmbeddedFontCatalog(
                         parsedFont.tableRecords.containsKey("loca")
                     is org.graphiks.kalligraphie.api.PaintGraphProfile ->
                         profile.schemaVersion == 1 &&
-                            parsedFont.tableRecords.containsKey("COLR") &&
-                            parsedFont.tableRecords.containsKey("CPAL")
+                            ((parsedFont.tableRecords.containsKey("COLR") &&
+                                parsedFont.tableRecords.containsKey("CPAL")) ||
+                                parsedFont.tableRecords.containsKey("SVG "))
                     is org.graphiks.kalligraphie.api.BitmapProfile ->
                         profile.schemaVersion == 1 &&
                             parsedFont.tableRecords.containsKey("EBLC") &&

@@ -40,6 +40,7 @@ import org.graphiks.kalligraphie.font.sfnt.ColrV0Layer
 import org.graphiks.kalligraphie.font.sfnt.EbdtFormatOneData
 import org.graphiks.kalligraphie.font.sfnt.EbdtFormatOneReader
 import org.graphiks.kalligraphie.font.sfnt.ParsedTrueTypeFont
+import org.graphiks.kalligraphie.font.sfnt.SvgOpenTypeReader
 import org.graphiks.kalligraphie.font.sfnt.slice
 
 internal class TrueTypeFace(
@@ -181,40 +182,12 @@ private data class TrueTypeFontInstance(
                 is PaintGraphProfile -> {
                     if (profile.schemaVersion != 1) {
                         failure(FontError.UnsupportedRepresentationProfile("Only paint-graph schema version 1 is supported.", FontDiagnosticLocation.FaceId(faceId)))
+                    } else if (parsedFont.tableRecords.containsKey("COLR") && parsedFont.tableRecords.containsKey("CPAL")) {
+                        acquireColrV0Asset(lease, resolver, renderVariant, profile)
+                    } else if (parsedFont.tableRecords.containsKey("SVG ")) {
+                        acquireSvgAsset(lease, resolver, renderVariant, profile)
                     } else {
-                        when (val colorData = readColrCpalV0(profile)) {
-                            is FontOperationResult.Success -> {
-                                val paletteIndex = renderVariant.cpalPaletteIndex ?: 0
-                                if (paletteIndex !in 0 until colorData.value.paletteCount) {
-                                    failure(
-                                        FontError.UnsupportedRepresentationProfile(
-                                            "The selected CPAL palette is unavailable in this font.",
-                                            FontDiagnosticLocation.FaceId(faceId),
-                                        ),
-                                    )
-                                } else {
-                                    FontOperationResult.Success(
-                                        ColrV0RenderAssetHandle(
-                                            faceId = faceId,
-                                            resourceLease = lease,
-                                            key = FontRenderAssetKey(
-                                                fontInstanceKey = key,
-                                                variant = renderVariant.key,
-                                                representationProfile = profile,
-                                                generation = resolver.generation,
-                                            ),
-                                            profile = profile,
-                                            colorData = colorData.value,
-                                            paletteIndex = paletteIndex,
-                                            foregroundColor = renderVariant.foregroundColor ?: GlyphColor(0, 0, 0),
-                                        ),
-                                    )
-                                }
-                            }
-
-                            is FontOperationResult.Failure -> colorData
-                            is FontOperationResult.Cancelled -> colorData
-                        }
+                        failure(FontError.UnsupportedRepresentationProfile("The font has no supported paint table.", FontDiagnosticLocation.FaceId(faceId)))
                     }
                 }
 
@@ -250,7 +223,7 @@ private data class TrueTypeFontInstance(
 
                 else -> failure(
                     FontError.UnsupportedRepresentationProfile(
-                        "The embedded TrueType provider supports only outline, COLR version 0 paint, and EBDT format 1 bitmap profiles.",
+                        "The embedded TrueType provider supports only outline, COLR version 0 paint, SVG version 0 paint, and EBDT format 1 bitmap profiles.",
                         FontDiagnosticLocation.FaceId(faceId),
                     ),
                 )
@@ -261,6 +234,77 @@ private data class TrueTypeFontInstance(
             lease.release()
             throw throwable
         }
+    }
+
+    private fun acquireColrV0Asset(
+        lease: PreparedFontResourceLease,
+        resolver: EmbeddedFontAssetResolver,
+        renderVariant: FontRenderVariantSnapshot,
+        profile: PaintGraphProfile,
+    ): FontOperationResult<FontRenderAssetHandle> = when (val colorData = readColrCpalV0(profile)) {
+        is FontOperationResult.Success -> {
+            val paletteIndex = renderVariant.cpalPaletteIndex ?: 0
+            if (paletteIndex !in 0 until colorData.value.paletteCount) {
+                failure(
+                    FontError.UnsupportedRepresentationProfile(
+                        "The selected CPAL palette is unavailable in this font.",
+                        FontDiagnosticLocation.FaceId(faceId),
+                    ),
+                )
+            } else {
+                FontOperationResult.Success(
+                    ColrV0RenderAssetHandle(
+                        faceId = faceId,
+                        resourceLease = lease,
+                        key = FontRenderAssetKey(
+                            fontInstanceKey = key,
+                            variant = renderVariant.key,
+                            representationProfile = profile,
+                            generation = resolver.generation,
+                        ),
+                        profile = profile,
+                        colorData = colorData.value,
+                        paletteIndex = paletteIndex,
+                        foregroundColor = renderVariant.foregroundColor ?: GlyphColor(0, 0, 0),
+                    ),
+                )
+            }
+        }
+
+        is FontOperationResult.Failure -> colorData
+        is FontOperationResult.Cancelled -> colorData
+    }
+
+    private fun acquireSvgAsset(
+        lease: PreparedFontResourceLease,
+        resolver: EmbeddedFontAssetResolver,
+        renderVariant: FontRenderVariantSnapshot,
+        profile: PaintGraphProfile,
+    ): FontOperationResult<FontRenderAssetHandle> {
+        if (renderVariant != FontRenderVariantSnapshot.default) {
+            return failure(
+                FontError.UnsupportedRepresentationProfile(
+                    "Schema version 1 SVG paint assets accept only the default render variant.",
+                    FontDiagnosticLocation.FaceId(faceId),
+                ),
+            )
+        }
+        val svgRecord = parsedFont.tableRecords["SVG "]
+            ?: return failure(FontError.UnsupportedRepresentationProfile("The font has no SVG table.", FontDiagnosticLocation.FaceId(faceId)))
+        if (svgRecord.length > profile.limits.maxSourceBytes.toLong()) {
+            return failure(FontError.ResourceLimitExceeded("SVG source-byte limit exceeded.", FontDiagnosticLocation.Table("SVG ")))
+        }
+        val svg = slice(resource.preparedFont.copySourceBytes(), svgRecord)
+            ?: return failure(FontError.InvalidFontData("SVG table exceeds embedded source bytes.", FontDiagnosticLocation.Table("SVG ")))
+        return FontOperationResult.Success(
+            SvgOpenTypeRenderAssetHandle(
+                faceId = faceId,
+                resourceLease = lease,
+                key = FontRenderAssetKey(key, renderVariant.key, profile, resolver.generation),
+                profile = profile,
+                svgTable = svg,
+            ),
+        )
     }
 
     private fun readColrCpalV0(profile: PaintGraphProfile): FontOperationResult<ColrCpalV0Data> {
@@ -524,6 +568,66 @@ internal class EbdtFormatOneRenderAssetHandle(
 
                 is FontOperationResult.Failure -> decoded
                 is FontOperationResult.Cancelled -> decoded
+            }
+        } finally {
+            lease.release()
+        }
+    }
+
+    override fun close(): FontOperationResult<Unit> {
+        lifecycle.close()
+        return FontOperationResult.Success(Unit)
+    }
+
+    private fun releaseResourceLease() {
+        resourceLease?.release()
+        resourceLease = null
+    }
+}
+
+/** Asset handle for the explicitly supported OpenType SVG version-0 route. */
+internal class SvgOpenTypeRenderAssetHandle(
+    override val faceId: FontFaceId,
+    private var resourceLease: PreparedFontResourceLease?,
+    override val key: FontRenderAssetKey,
+    private val profile: PaintGraphProfile,
+    svgTable: ByteArray,
+) : FontRenderAssetHandle {
+    private val svgTable: ByteArray = svgTable.copyOf()
+    private val lifecycle = FontHandleLifecycle(::releaseResourceLease)
+
+    override fun detach(): FontOperationResult<FontRenderAssetHandle> {
+        val lease = lifecycle.acquireLease()
+            ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+        return try {
+            val detachedResourceLease = resourceLease?.resource?.acquireLease()
+                ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+            FontOperationResult.Success(
+                SvgOpenTypeRenderAssetHandle(faceId, detachedResourceLease, key, profile, svgTable),
+            )
+        } finally {
+            lease.release()
+        }
+    }
+
+    override fun resolveGlyph(request: FontGlyphRequest): FontOperationResult<GlyphRepresentation> =
+        resolveGlyph(request, CancellationToken.none)
+
+    override fun resolveGlyph(
+        request: FontGlyphRequest,
+        cancellationToken: CancellationToken,
+    ): FontOperationResult<GlyphRepresentation> {
+        val lease = lifecycle.acquireLease()
+            ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+        return try {
+            when (val result = SvgOpenTypeReader.readGlyph(svgTable, GlyphId(request.glyphId), profile, cancellationToken)) {
+                is FontOperationResult.Success -> FontOperationResult.Success(
+                    result.value?.let(GlyphRepresentation::Paint) ?: GlyphRepresentation.Empty,
+                    result.diagnostics,
+                )
+
+                is FontOperationResult.Failure -> result
+                is FontOperationResult.Cancelled -> result
             }
         } finally {
             lease.release()

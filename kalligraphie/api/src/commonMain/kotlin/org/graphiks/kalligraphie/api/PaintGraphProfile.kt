@@ -5,8 +5,23 @@ public enum class GlyphPaintNodeKind {
     /** A solid fill of one complete outline. */
     SOLID_OUTLINE,
 
+    /** A vector path with a portable solid or gradient brush. */
+    PATH,
+
+    /** An affine transform over one complete child subgraph. */
+    TRANSFORM,
+
     /** An ordered compositing group. */
     GROUP,
+}
+
+/** Gradient category a paint-graph consumer explicitly accepts. */
+public enum class GlyphPaintGradientKind {
+    /** A gradient interpolated along one line. */
+    LINEAR,
+
+    /** A gradient interpolated outward from one circle. */
+    RADIAL,
 }
 
 /** Resource limits enforced while validating one portable paint graph. */
@@ -33,6 +48,16 @@ public data class PaintGraphLimits(
     public val maxBaseGlyphRecords: Int = 65_536,
     /** Maximum COLR layer records decoded before selecting one glyph. */
     public val maxLayerRecords: Int = 65_536,
+    /** Maximum compressed SVG bytes read from one OpenType SVG document. */
+    public val maxCompressedSvgBytes: Int = maxSourceBytes,
+    /** Maximum decoded SVG bytes normalized from one OpenType SVG document. */
+    public val maxDecompressedSvgBytes: Int = maxSourceBytes,
+    /** Maximum nested SVG elements admitted while parsing one document. */
+    public val maxSvgDepth: Int = 64,
+    /** Maximum path commands normalized from one SVG glyph. */
+    public val maxSvgPathCommands: Int = maxNodes * 16,
+    /** Maximum gradient stops normalized from one SVG glyph. */
+    public val maxSvgGradientStops: Int = 256,
 ) {
     init {
         require(maxNodes > 0) { "maxNodes must be positive." }
@@ -46,6 +71,11 @@ public data class PaintGraphLimits(
         require(maxColorRecords > 0) { "maxColorRecords must be positive." }
         require(maxBaseGlyphRecords > 0) { "maxBaseGlyphRecords must be positive." }
         require(maxLayerRecords > 0) { "maxLayerRecords must be positive." }
+        require(maxCompressedSvgBytes > 0) { "maxCompressedSvgBytes must be positive." }
+        require(maxDecompressedSvgBytes > 0) { "maxDecompressedSvgBytes must be positive." }
+        require(maxSvgDepth > 0) { "maxSvgDepth must be positive." }
+        require(maxSvgPathCommands > 0) { "maxSvgPathCommands must be positive." }
+        require(maxSvgGradientStops > 0) { "maxSvgGradientStops must be positive." }
     }
 }
 
@@ -65,11 +95,17 @@ public class PaintGraphProfile(
     public val outlineProfile: OutlineProfile,
     /** Version of the paint-graph schema accepted by the consumer. */
     override val schemaVersion: Int = 1,
+    acceptedGradientKinds: List<GlyphPaintGradientKind> = emptyList(),
+    acceptedGradientSpreads: List<GlyphPaintGradientSpread> = emptyList(),
 ) : GlyphRepresentationProfile {
     /** Immutable node categories accepted by this consumer. */
     public val acceptedNodeKinds: List<GlyphPaintNodeKind> = acceptedNodeKinds.immutableListSnapshot()
     /** Immutable composition operations accepted by this consumer. */
     public val acceptedCompositionModes: List<GlyphPaintCompositionMode> = acceptedCompositionModes.immutableListSnapshot()
+    /** Immutable gradient categories accepted by this consumer. */
+    public val acceptedGradientKinds: List<GlyphPaintGradientKind> = acceptedGradientKinds.immutableListSnapshot()
+    /** Immutable repeat behaviors accepted for every gradient. */
+    public val acceptedGradientSpreads: List<GlyphPaintGradientSpread> = acceptedGradientSpreads.immutableListSnapshot()
 
     init {
         require(schemaVersion > 0) { "schemaVersion must be positive." }
@@ -78,6 +114,12 @@ public class PaintGraphProfile(
         require(this.acceptedCompositionModes.distinct().size == this.acceptedCompositionModes.size) {
             "Paint composition modes must not repeat."
         }
+        require(this.acceptedGradientKinds.distinct().size == this.acceptedGradientKinds.size) {
+            "Paint gradient kinds must not repeat."
+        }
+        require(this.acceptedGradientSpreads.distinct().size == this.acceptedGradientSpreads.size) {
+            "Paint gradient spreads must not repeat."
+        }
     }
 
     /** Returns whether [paint] is completely supported within this profile's declared bounds. */
@@ -85,8 +127,13 @@ public class PaintGraphProfile(
         if (paint.schemaVersion != schemaVersion || paint.nodes.size > limits.maxNodes) return false
         val references = paint.nodes.sumOf { node -> node.children.size }
         if (references > limits.maxReferences) return false
-        val paths = paint.nodes.count { node -> node is GlyphPaintNode.SolidOutline }
+        val paths = paint.nodes.count { node -> node is GlyphPaintNode.SolidOutline || node is GlyphPaintNode.Path }
         if (paths > limits.maxPaths) return false
+        val gradients = paint.nodes.mapNotNull { node -> (node as? GlyphPaintNode.Path)?.brush }.filter { it !is GlyphPaintBrush.Solid }
+        if (gradients.size > limits.maxGradients) return false
+        if (gradients.any { gradient -> gradient.kind() !in acceptedGradientKinds || gradient.spread() !in acceptedGradientSpreads }) {
+            return false
+        }
         if (paint.nodes.any { node -> node.kind() !in acceptedNodeKinds }) return false
         if (paint.nodes.filterIsInstance<GlyphPaintNode.Group>().any { group -> group.compositionMode !in acceptedCompositionModes }) {
             return false
@@ -98,6 +145,8 @@ public class PaintGraphProfile(
         other is PaintGraphProfile &&
             acceptedNodeKinds == other.acceptedNodeKinds &&
             acceptedCompositionModes == other.acceptedCompositionModes &&
+            acceptedGradientKinds == other.acceptedGradientKinds &&
+            acceptedGradientSpreads == other.acceptedGradientSpreads &&
             limits == other.limits &&
             outlineProfile == other.outlineProfile &&
             schemaVersion == other.schemaVersion
@@ -105,6 +154,8 @@ public class PaintGraphProfile(
     override fun hashCode(): Int {
         var result = acceptedNodeKinds.hashCode()
         result = 31 * result + acceptedCompositionModes.hashCode()
+        result = 31 * result + acceptedGradientKinds.hashCode()
+        result = 31 * result + acceptedGradientSpreads.hashCode()
         result = 31 * result + limits.hashCode()
         result = 31 * result + outlineProfile.hashCode()
         return 31 * result + schemaVersion
@@ -113,7 +164,21 @@ public class PaintGraphProfile(
 
 private fun GlyphPaintNode.kind(): GlyphPaintNodeKind = when (this) {
     is GlyphPaintNode.SolidOutline -> GlyphPaintNodeKind.SOLID_OUTLINE
+    is GlyphPaintNode.Path -> GlyphPaintNodeKind.PATH
+    is GlyphPaintNode.Transform -> GlyphPaintNodeKind.TRANSFORM
     is GlyphPaintNode.Group -> GlyphPaintNodeKind.GROUP
+}
+
+private fun GlyphPaintBrush.kind(): GlyphPaintGradientKind = when (this) {
+    is GlyphPaintBrush.LinearGradient -> GlyphPaintGradientKind.LINEAR
+    is GlyphPaintBrush.RadialGradient -> GlyphPaintGradientKind.RADIAL
+    is GlyphPaintBrush.Solid -> error("A solid brush has no gradient kind.")
+}
+
+private fun GlyphPaintBrush.spread(): GlyphPaintGradientSpread = when (this) {
+    is GlyphPaintBrush.LinearGradient -> spread
+    is GlyphPaintBrush.RadialGradient -> spread
+    is GlyphPaintBrush.Solid -> error("A solid brush has no gradient spread.")
 }
 
 private fun GlyphPaintIR.depthFromRoot(): Int {

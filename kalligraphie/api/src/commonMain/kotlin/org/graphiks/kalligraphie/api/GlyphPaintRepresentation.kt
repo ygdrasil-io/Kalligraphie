@@ -45,6 +45,26 @@ public sealed interface GlyphPaintNode {
         override val children: List<Int> = emptyList()
     }
 
+    /** Paints one portable vector path with an explicitly normalized brush. */
+    public data class Path(
+        /** Geometry to fill. */
+        public val path: GlyphPaintPath,
+        /** Brush applied to [path]. */
+        public val brush: GlyphPaintBrush,
+    ) : GlyphPaintNode {
+        override val children: List<Int> = emptyList()
+    }
+
+    /** Applies one affine transform to a complete child subgraph. */
+    public data class Transform(
+        /** Only child node affected by the transform. */
+        public val child: Int,
+        /** Transform applied before the child is painted. */
+        public val transform: GlyphPaintTransform,
+    ) : GlyphPaintNode {
+        override val children: List<Int> = listOf(child)
+    }
+
     /** Groups child nodes in source order with one explicitly declared composition operation. */
     public class Group(
         children: List<Int>,
