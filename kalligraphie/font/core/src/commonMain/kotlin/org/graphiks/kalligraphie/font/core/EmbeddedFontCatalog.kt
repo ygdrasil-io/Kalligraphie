@@ -17,6 +17,8 @@ import org.graphiks.kalligraphie.api.FontProviderId
 import org.graphiks.kalligraphie.api.FontRenderAssetHandle
 import org.graphiks.kalligraphie.api.FontRenderAssetKey
 import org.graphiks.kalligraphie.api.FontRenderVariantKey
+import org.graphiks.kalligraphie.api.FontRenderVariantSnapshot
+import org.graphiks.kalligraphie.api.FontInstanceDescriptor
 import org.graphiks.kalligraphie.api.FontSource
 import org.graphiks.kalligraphie.api.FontSourceId
 import org.graphiks.kalligraphie.api.sortedDiagnostics
@@ -106,7 +108,7 @@ public class EmbeddedFontCatalog(
 
     /** Opens a resolver backed by the embedded source. */
     override fun openAssetResolver(): FontOperationResult<FontAssetResolverHandle> =
-        FontOperationResult.Success(EmbeddedFontAssetResolver(generation, resources))
+        FontOperationResult.Success(EmbeddedFontAssetResolver(generation, resources, parsedFonts))
 
     /** Resolves a face when the requested access profile is supported. */
     override fun resolveFace(
@@ -183,6 +185,7 @@ public data class EmbeddedFontCatalogEntry(
 internal class EmbeddedFontAssetResolver(
     override val generation: FontCatalogGeneration,
     private val resources: Map<FontFaceId, PreparedFontResource>,
+    private val parsedFonts: Map<FontFaceId, ParsedTrueTypeFont>,
 ) : FontAssetResolverHandle {
     private val resourceLeases: MutableMap<FontFaceId, PreparedFontResourceLease> =
         resources.mapValues { (_, resource) -> resource.acquireLease() }.toMutableMap()
@@ -207,18 +210,26 @@ internal class EmbeddedFontAssetResolver(
         if (!isReopenableEmbeddedKey(key)) {
             return failure(FontError.AssetUnavailable("Asset key does not identify an embedded TrueType render asset in this catalog generation."))
         }
-        val lease = acquireAssetLease(key.fontInstanceKey.face)
-            ?: return if (lifecycle.isOpenForNewOperations()) {
-                failure(FontError.AssetUnavailable("The asset face is not available in this catalog generation."))
-            } else {
-                failure(FontError.ResourceClosed("Asset resolver is closed."))
-            }
-        return FontOperationResult.Success(
-            TrueTypeRenderAssetHandle(
-                faceId = key.fontInstanceKey.face,
-                resourceLease = lease,
-                key = key,
-            ),
+        val variant = key.variantSnapshot ?: FontRenderVariantSnapshot.default
+        if (variant.key != key.variant) {
+            return failure(FontError.AssetUnavailable("Render variant context does not match the requested asset key."))
+        }
+        val face = key.fontInstanceKey.face
+        val resource = resources[face]
+            ?: return failure(FontError.AssetUnavailable("The asset face is not available in this catalog generation."))
+        val parsedFont = parsedFonts[face]
+            ?: return failure(FontError.AssetUnavailable("The asset face metadata is not available in this catalog generation."))
+        return TrueTypeFontInstance(
+            key = key.fontInstanceKey,
+            descriptor = FontInstanceDescriptor(key.fontInstanceKey.layoutSize, key.fontInstanceKey.geometry),
+            resource = resource,
+            faceId = face,
+            generation = generation,
+            parsedFont = parsedFont,
+        ).acquireRenderAsset(
+            resolver = this,
+            renderVariant = variant,
+            requirements = FontAccessRequirementsSnapshot.renderable(listOf(key.representationProfile)),
         )
     }
 
@@ -234,8 +245,23 @@ internal class EmbeddedFontAssetResolver(
 
     private fun isReopenableEmbeddedKey(key: FontRenderAssetKey): Boolean {
         val instance = key.fontInstanceKey
-        return key.variant == FontRenderVariantKey.default &&
-            (key.representationProfile as? org.graphiks.kalligraphie.api.OutlineProfile)?.schemaVersion == 1 &&
+        val parsedFont = parsedFonts[instance.face] ?: return false
+        val representationIsSupported = when (val profile = key.representationProfile) {
+            is org.graphiks.kalligraphie.api.OutlineProfile ->
+                key.variant == FontRenderVariantKey.default &&
+                    profile.schemaVersion == 1 &&
+                    parsedFont.tableRecords.containsKey("glyf") && parsedFont.tableRecords.containsKey("loca")
+            is org.graphiks.kalligraphie.api.PaintGraphProfile ->
+                profile.schemaVersion == 1 &&
+                    (parsedFont.tableRecords.containsKey("COLR") && parsedFont.tableRecords.containsKey("CPAL") ||
+                        (key.variant == FontRenderVariantKey.default && parsedFont.tableRecords.containsKey("SVG ")))
+            is org.graphiks.kalligraphie.api.BitmapProfile ->
+                key.variant == FontRenderVariantKey.default &&
+                    profile.schemaVersion == 1 &&
+                    parsedFont.tableRecords.containsKey("EBLC") && parsedFont.tableRecords.containsKey("EBDT")
+            else -> false
+        }
+        return representationIsSupported &&
             instance.face in resources &&
             instance.interpretation.pipelineId == "org.graphiks.kalligraphie.true-type" &&
             instance.interpretation.version == "1" &&

@@ -72,6 +72,33 @@ class ColrV0GlyphRepresentationTest {
         }
     }
 
+    @Test
+    fun reopensTheExactNonDefaultPaletteVariantFromItsLiveGenerationResolver() {
+        val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("EmojiTwo COLRv0 4.0")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(paintProfile()))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(2_048f))))
+        val variant = FontRenderVariantSnapshot(cpalPaletteIndex = 0, foregroundColor = GlyphColor(12, 34, 56))
+
+        try {
+            val asset = success(instance.acquireRenderAsset(resolver, variant, requirements))
+            val certificate = try {
+                success(asset.resolveGlyphCertified(org.graphiks.kalligraphie.api.FontGlyphRequest(GlyphId(1_443)))).certificate
+            } finally {
+                asset.close()
+            }
+            val reopened = success(resolver.reopen(certificate.assetKey))
+            try {
+                assertIs<GlyphRepresentation.Paint>(success(reopened.resolveCertifiedGlyph(certificate)))
+            } finally {
+                reopened.close()
+            }
+        } finally {
+            resolver.close()
+        }
+    }
+
     private fun paintProfile(): PaintGraphProfile = PaintGraphProfile(
         acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE, GlyphPaintNodeKind.GROUP),
         acceptedCompositionModes = listOf(GlyphPaintCompositionMode.SOURCE_OVER),

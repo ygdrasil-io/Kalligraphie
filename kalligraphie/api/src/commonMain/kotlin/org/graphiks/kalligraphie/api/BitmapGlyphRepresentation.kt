@@ -47,6 +47,18 @@ public data class BitmapLimits(
     public val maxCompressedBytes: Int,
     /** Maximum decoded pixel bytes retained for one bitmap glyph. */
     public val maxDecodedBytes: Int,
+    /** Maximum EBLC index subtables inspected for the selected strike. */
+    public val maxIndexSubtables: Int = maxStrikes,
+    /** Maximum bitmap records retained for the selected strike. */
+    public val maxRecordCount: Int = maxPixels,
+    /** Maximum EBDT source bytes retained across every selected bitmap record. */
+    public val maxTotalCompressedBytes: Int = maxCompressedBytes,
+    /** Maximum decoded pixel bytes represented across every selected bitmap record. */
+    public val maxTotalDecodedBytes: Int = maxDecodedBytes,
+    /** Maximum copied EBLC index-table bytes admitted before parsing. */
+    public val maxIndexTableBytes: Int = DEFAULT_MAX_BITMAP_TABLE_BYTES,
+    /** Maximum copied EBDT bitmap-table bytes admitted before parsing. */
+    public val maxBitmapTableBytes: Int = DEFAULT_MAX_BITMAP_TABLE_BYTES,
 ) {
     init {
         require(maxStrikes > 0) { "maxStrikes must be positive." }
@@ -55,8 +67,16 @@ public data class BitmapLimits(
         require(maxPixels > 0) { "maxPixels must be positive." }
         require(maxCompressedBytes > 0) { "maxCompressedBytes must be positive." }
         require(maxDecodedBytes > 0) { "maxDecodedBytes must be positive." }
+        require(maxIndexSubtables > 0) { "maxIndexSubtables must be positive." }
+        require(maxRecordCount > 0) { "maxRecordCount must be positive." }
+        require(maxTotalCompressedBytes > 0) { "maxTotalCompressedBytes must be positive." }
+        require(maxTotalDecodedBytes > 0) { "maxTotalDecodedBytes must be positive." }
+        require(maxIndexTableBytes > 0) { "maxIndexTableBytes must be positive." }
+        require(maxBitmapTableBytes > 0) { "maxBitmapTableBytes must be positive." }
     }
 }
+
+private const val DEFAULT_MAX_BITMAP_TABLE_BYTES: Int = 1_048_576
 
 /**
  * Exact bitmap-strike and pixel capabilities accepted by a portable consumer.

@@ -90,6 +90,8 @@ public object EbdtFormatOneReader {
         if (profile.schemaVersion != 1 || BitmapPixelFormat.ALPHA_8 !in profile.acceptedPixelFormats || GlyphColorSpace.SRGB !in profile.acceptedColorSpaces) {
             return unsupported("The selected bitmap profile does not accept EBDT format 1 alpha pixels.")
         }
+        if (eblcTable.size > profile.limits.maxIndexTableBytes) return limit("EBLC table-byte limit exceeded.", "EBLC")
+        if (ebdtTable.size > profile.limits.maxBitmapTableBytes) return limit("EBDT table-byte limit exceeded.", "EBDT")
         if (eblcTable.size < EBLC_HEADER_LENGTH) return invalid("font.eblc.truncated", "EBLC header is truncated.", "EBLC")
         if (readUInt32(eblcTable, 0) != EBLC_VERSION_2) return unsupported("Only EBLC version 2.0 is supported.")
         if (readUInt32(ebdtTable, 0) != EBDT_VERSION_2) return unsupported("Only EBDT version 2.0 is supported.")
@@ -123,9 +125,14 @@ public object EbdtFormatOneReader {
         size: BitmapSizeTable,
         profile: BitmapProfile,
     ): FontOperationResult<EbdtFormatOneData> {
+        if (size.numberOfIndexSubTables > profile.limits.maxIndexSubtables) {
+            return limit("EBLC index-subtable limit exceeded.", "EBLC")
+        }
         checkedRangeEnd(size.indexSubTableArrayOffset, size.numberOfIndexSubTables.toLong() * INDEX_SUBTABLE_ARRAY_ENTRY_LENGTH, eblc.size)
             ?: return invalid("font.eblc.truncated", "EBLC index-subtable array is truncated.", "EBLC")
         val records = LinkedHashMap<GlyphId, EbdtFormatOneRecord>()
+        var totalCompressedBytes = 0L
+        var totalDecodedBytes = 0L
         repeat(size.numberOfIndexSubTables) { index ->
             val entryOffset = size.indexSubTableArrayOffset.toInt() + index * INDEX_SUBTABLE_ARRAY_ENTRY_LENGTH
             val firstGlyph = readUInt16(eblc, entryOffset)?.toInt()
@@ -148,6 +155,9 @@ public object EbdtFormatOneReader {
                 ?: return invalid("font.eblc.truncated", "EBLC image-data offset is truncated.", "EBLC")
             if (indexFormat != 1 || imageFormat != 1) return unsupported("Only EBLC index format 1 and EBDT image format 1 are supported.")
             val glyphsInSubtable = lastGlyph - firstGlyph + 1
+            if (glyphsInSubtable > profile.limits.maxRecordCount - records.size) {
+                return limit("EBDT bitmap-record limit exceeded.", "EBLC")
+            }
             val offsetArrayStart = subtableOffset + INDEX_SUBTABLE_HEADER_LENGTH
             checkedRangeEnd(offsetArrayStart, (glyphsInSubtable + 1).toLong() * 4L, eblc.size)
                 ?: return invalid("font.eblc.truncated", "EBLC image-offset array is truncated.", "EBLC")
@@ -164,6 +174,9 @@ public object EbdtFormatOneReader {
                 val length = offsets[glyphOffset + 1] - offsets[glyphOffset]
                 if (length == 0L) return@repeat
                 if (length > profile.limits.maxCompressedBytes.toLong()) return limit("EBDT compressed-byte limit exceeded.", "EBDT")
+                if (length > profile.limits.maxTotalCompressedBytes.toLong() - totalCompressedBytes) {
+                    return limit("EBDT aggregate compressed-byte limit exceeded.", "EBDT")
+                }
                 val dataOffset = imageDataOffset + offsets[glyphOffset]
                 val dataEnd = checkedRangeEnd(dataOffset, length, ebdt.size)
                     ?: return invalid("font.ebdt.truncated", "EBDT image data is truncated.", "EBDT")
@@ -172,8 +185,14 @@ public object EbdtFormatOneReader {
                     is FontOperationResult.Failure -> return parsed
                     is FontOperationResult.Cancelled -> return parsed
                 }
+                val decodedBytes = record.width.toLong() * record.height.toLong()
+                if (decodedBytes > profile.limits.maxTotalDecodedBytes.toLong() - totalDecodedBytes) {
+                    return limit("EBDT aggregate decoded-pixel limit exceeded.", "EBDT")
+                }
                 val glyphId = GlyphId(firstGlyph + glyphOffset)
                 if (records.put(glyphId, record) != null) return invalid("font.eblc.duplicate-glyph", "EBLC strike has overlapping glyph records.", "EBLC")
+                totalCompressedBytes += length
+                totalDecodedBytes += decodedBytes
             }
         }
         return FontOperationResult.Success(EbdtFormatOneData(size.strike, glyphCount, records))

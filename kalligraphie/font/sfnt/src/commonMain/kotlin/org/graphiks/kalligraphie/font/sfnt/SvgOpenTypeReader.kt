@@ -106,7 +106,7 @@ public object SvgOpenTypeReader {
         cancellationToken: CancellationToken,
     ): FontOperationResult<GlyphPaintIR?> {
         val gradients = LinkedHashMap<String, SvgGradientBuilder>()
-        val transformStack = ArrayList<GlyphPaintTransform>()
+        val groupStack = ArrayList<SvgGroupContext>()
         val elementStack = ArrayList<String>()
         val nodes = ArrayList<GlyphPaintNode>()
         val paintedRoots = ArrayList<Int>()
@@ -143,7 +143,9 @@ public object SvgOpenTypeReader {
                         activeGradient = null
                     }
 
-                    "g" -> if (transformStack.isNotEmpty()) transformStack.removeLast()
+                    "g" -> if (groupStack.removeLastOrNull() == null) {
+                        return invalid("font.svg.mismatched-group", "SVG group close has no open group.")
+                    }
                 }
                 continue
             }
@@ -190,27 +192,27 @@ public object SvgOpenTypeReader {
                 "g" -> {
                     val id = token.attributes["id"]
                     val isTarget = id == "glyph${glyphId.value}"
-                    if (transformStack.isNotEmpty() || isTarget) {
-                        if (!token.attributes.keys.all { it == "id" || it == "transform" }) {
-                            return unsupported("SVG group attributes are unsupported.")
-                        }
-                        val parsedTransform = token.attributes["transform"]?.let(::parseMatrix)
-                        if (token.attributes.containsKey("transform") && parsedTransform == null) {
-                            return unsupported("Only SVG matrix transforms are supported.")
-                        }
-                        val transform = parsedTransform ?: GlyphPaintTransform.identity
-                        transformStack += (transformStack.lastOrNull()?.followedBy(transform) ?: transform)
-                        sawTargetGroup = sawTargetGroup || isTarget
+                    if (!token.attributes.keys.all { it == "id" || it == "transform" }) {
+                        return unsupported("SVG group attributes are unsupported.")
                     }
+                    val parsedTransform = token.attributes["transform"]?.let(::parseMatrix)
+                    if (token.attributes.containsKey("transform") && parsedTransform == null) {
+                        return unsupported("Only SVG matrix transforms are supported.")
+                    }
+                    val localTransform = parsedTransform ?: GlyphPaintTransform.identity
+                    val parent = groupStack.lastOrNull()
+                    val paintsTarget = isTarget || (parent?.paintsTarget == true && id == null)
+                    val transform = parent?.transform?.followedBy(localTransform) ?: localTransform
+                    sawTargetGroup = sawTargetGroup || isTarget
+                    if (!token.selfClosing) groupStack += SvgGroupContext(transform, paintsTarget)
                     if (token.selfClosing) {
-                        if (transformStack.isNotEmpty()) transformStack.removeLast()
                         documentDepth -= 1
                     }
                 }
 
                 "path" -> {
-                    val currentTransform = transformStack.lastOrNull()
-                    if (currentTransform != null) {
+                    val currentGroup = groupStack.lastOrNull()
+                    if (currentGroup?.paintsTarget == true) {
                         val path = parsePath(token.attributes["d"] ?: return invalid("font.svg.path", "SVG path has no d attribute."), profile)
                             ?: return invalid("font.svg.path", "SVG path data is invalid.")
                         val brush = parseBrush(token, gradients) ?: return unsupported("SVG path paint attributes are unsupported.")
@@ -218,7 +220,7 @@ public object SvgOpenTypeReader {
                         if (token.attributes.containsKey("transform") && localTransform == null) {
                             return unsupported("Only SVG matrix transforms are supported.")
                         }
-                        val transform = currentTransform.followedBy(localTransform ?: GlyphPaintTransform.identity)
+                        val transform = currentGroup.transform.followedBy(localTransform ?: GlyphPaintTransform.identity)
                         val pathIndex = nodes.size
                         nodes += GlyphPaintNode.Path(path, brush)
                         val root = if (transform == GlyphPaintTransform.identity) {
@@ -631,6 +633,11 @@ private sealed class SvgGradientBuilder(
 }
 
 private data class SvgDocumentRecord(val offset: Long, val length: Long)
+
+private data class SvgGroupContext(
+    val transform: GlyphPaintTransform,
+    val paintsTarget: Boolean,
+)
 
 private data class SvgTag(
     val name: String,

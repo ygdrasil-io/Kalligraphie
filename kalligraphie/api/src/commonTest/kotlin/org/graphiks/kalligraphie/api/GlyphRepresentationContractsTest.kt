@@ -5,6 +5,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 
 class GlyphRepresentationContractsTest {
@@ -46,6 +47,44 @@ class GlyphRepresentationContractsTest {
         )
 
         assertNotEquals(paletteZero.key, paletteOne.key)
+    }
+
+    @Test
+    fun portableProfileKeysKeepEveryPaintAndBitmapResourceBoundInTheirIdentity() {
+        val outline = outlineProfile()
+        val paint = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.PATH),
+            acceptedCompositionModes = emptyList(),
+            limits = PaintGraphLimits(maxNodes = 2, maxReferences = 0, maxDepth = 1, maxSvgPathCommands = 2),
+            outlineProfile = outline,
+        )
+        val stricterPaint = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.PATH),
+            acceptedCompositionModes = emptyList(),
+            limits = PaintGraphLimits(maxNodes = 2, maxReferences = 0, maxDepth = 1, maxSvgPathCommands = 1),
+            outlineProfile = outline,
+        )
+        val bitmap = BitmapProfile(
+            strike = BitmapStrike(16, 16),
+            acceptedPixelFormats = listOf(BitmapPixelFormat.ALPHA_8),
+            acceptedColorSpaces = listOf(GlyphColorSpace.SRGB),
+            limits = BitmapLimits(1, 16, 16, 256, 128, 256),
+        )
+        val stricterBitmap = BitmapProfile(
+            strike = BitmapStrike(16, 16),
+            acceptedPixelFormats = listOf(BitmapPixelFormat.ALPHA_8),
+            acceptedColorSpaces = listOf(GlyphColorSpace.SRGB),
+            limits = BitmapLimits(1, 16, 16, 256, 128, 256, maxTotalCompressedBytes = 64),
+        )
+
+        assertNotEquals(
+            GlyphRepresentationProfileKey.paintGraph(paint),
+            GlyphRepresentationProfileKey.paintGraph(stricterPaint),
+        )
+        assertNotEquals(
+            GlyphRepresentationProfileKey.bitmap(bitmap),
+            GlyphRepresentationProfileKey.bitmap(stricterBitmap),
+        )
     }
 
     @Test
@@ -209,6 +248,60 @@ class GlyphRepresentationContractsTest {
                 portableDataRequired = true,
             )
         }
+    }
+
+    @Test
+    fun certificationRejectsAProviderPaintGraphThatExceedsTheSelectedProfile() {
+        val profile = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.PATH),
+            acceptedCompositionModes = emptyList(),
+            limits = PaintGraphLimits(
+                maxNodes = 1,
+                maxReferences = 0,
+                maxDepth = 1,
+                maxPaths = 1,
+                maxSvgPathCommands = 1,
+            ),
+            outlineProfile = outlineProfile(),
+        )
+        val asset = object : FontRenderAssetHandle {
+            override val key: FontRenderAssetKey = FontRenderAssetKey(
+                fontInstanceKey = instanceKey(),
+                variant = FontRenderVariantKey.default,
+                representationProfile = profile,
+                generation = FontCatalogGeneration(FontProviderId("contract-test"), "generation-1"),
+            )
+            override val faceId: FontFaceId = key.fontInstanceKey.face
+
+            override fun resolveGlyph(request: FontGlyphRequest): FontOperationResult<GlyphRepresentation> =
+                FontOperationResult.Success(
+                    GlyphRepresentation.Paint(
+                        GlyphPaintIR(
+                            schemaVersion = 1,
+                            rootNode = 0,
+                            nodes = listOf(
+                                GlyphPaintNode.Path(
+                                    GlyphPaintPath(
+                                        listOf(
+                                            GlyphPaintPathCommand.MoveTo(0.0, 0.0),
+                                            GlyphPaintPathCommand.LineTo(1.0, 1.0),
+                                        ),
+                                    ),
+                                    GlyphPaintBrush.Solid(GlyphColor(0, 0, 0)),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+
+            override fun close(): FontOperationResult<Unit> = FontOperationResult.Success(Unit)
+        }
+
+        val result = asset.resolveGlyphCertified(FontGlyphRequest(GlyphId(42)))
+
+        assertIs<FontError.UnsupportedRepresentationProfile>(
+            assertIs<FontOperationResult.Failure>(result).error,
+        )
     }
 
     private fun instanceKey(): FontInstanceKey =

@@ -40,9 +40,10 @@ animation, filtres, masques, clips, images et texte SVG, codecs bitmap autres
 que l’image EBDT format `1`, CFF/CFF2, collections, variations, styles
 synthétiques, API GPU et rastériseur sont refusés avant la certification. Les
 limites de profil bornent les octets source, nœuds et références de graphe,
-profondeur et géométrie SVG, dimensions bitmap, pixels et octets décodés. Une
-route demandée n’est jamais remplacée silencieusement par une route native ou
-moins fidèle.
+profondeur et géométrie SVG, tables et enregistrements bitmap, dimensions,
+pixels individuels et cumulés du strike (taille matricielle), et octets
+décodés. Une route demandée n’est jamais remplacée silencieusement par une
+route native ou moins fidèle.
 
 ```kotlin
 fun <T> success(result: FontOperationResult<T>): T = when (result) {

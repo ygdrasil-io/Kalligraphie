@@ -33,9 +33,10 @@ No native bridge is currently implemented. `NativeHandleProfile`, COLR version
 images and text, bitmap codecs other than EBDT image format `1`, CFF/CFF2,
 collections, variations, synthetic styles, and GPU or rasterizer APIs are
 rejected before a representation is certified. Profile limits bound source
-bytes, graph nodes and references, SVG depth and geometry, bitmap dimensions,
-pixels, and decoded bytes. A requested route is never silently replaced with a
-native or less-faithful route.
+bytes, graph nodes and references, SVG depth and geometry, bitmap table and
+record bytes, dimensions, per-glyph and aggregate strike pixels, and decoded
+bytes. A requested route is never silently replaced with a native or
+less-faithful route.
 
 ```kotlin
 fun <T> success(result: FontOperationResult<T>): T = when (result) {

@@ -50,6 +50,34 @@ public data class GlyphRepresentationProfileKey(
                 ).joinToString(":"),
             )
 
+        /** Returns the complete identity of one portable paint-graph profile. */
+        public fun paintGraph(profile: PaintGraphProfile): GlyphRepresentationProfileKey =
+            GlyphRepresentationProfileKey(
+                kind = GlyphRepresentationProfileKind.PAINT_GRAPH,
+                schemaVersion = profile.schemaVersion,
+                parameters = listOf(
+                    "nodes=${profile.acceptedNodeKinds.joinToString(",")}",
+                    "composition=${profile.acceptedCompositionModes.joinToString(",")}",
+                    "gradients=${profile.acceptedGradientKinds.joinToString(",")}",
+                    "spreads=${profile.acceptedGradientSpreads.joinToString(",")}",
+                    "limits=${paintLimits(profile.limits)}",
+                    "outline=${outline(profile.outlineProfile).parameters}",
+                ).joinToString(";"),
+            )
+
+        /** Returns the complete identity of one portable bitmap profile. */
+        public fun bitmap(profile: BitmapProfile): GlyphRepresentationProfileKey =
+            GlyphRepresentationProfileKey(
+                kind = GlyphRepresentationProfileKind.BITMAP,
+                schemaVersion = profile.schemaVersion,
+                parameters = listOf(
+                    "strike=${profile.strike.pixelsPerEmX}x${profile.strike.pixelsPerEmY}",
+                    "formats=${profile.acceptedPixelFormats.joinToString(",")}",
+                    "spaces=${profile.acceptedColorSpaces.joinToString(",")}",
+                    "limits=${bitmapLimits(profile.limits)}",
+                ).joinToString(";"),
+            )
+
         /** Returns the complete identity of one native-handle profile. */
         public fun nativeHandle(profile: NativeHandleProfile): GlyphRepresentationProfileKey =
             GlyphRepresentationProfileKey(
@@ -57,6 +85,40 @@ public data class GlyphRepresentationProfileKey(
                 schemaVersion = profile.schemaVersion,
                 parameters = "${profile.bridgeKind}:${profile.bridgeVersion}",
             )
+
+        private fun paintLimits(limits: PaintGraphLimits): String = listOf(
+            limits.maxNodes,
+            limits.maxReferences,
+            limits.maxDepth,
+            limits.maxSourceBytes,
+            limits.maxPaths,
+            limits.maxGradients,
+            limits.maxPalettes,
+            limits.maxPaletteEntries,
+            limits.maxColorRecords,
+            limits.maxBaseGlyphRecords,
+            limits.maxLayerRecords,
+            limits.maxCompressedSvgBytes,
+            limits.maxDecompressedSvgBytes,
+            limits.maxSvgDepth,
+            limits.maxSvgPathCommands,
+            limits.maxSvgGradientStops,
+        ).joinToString(":")
+
+        private fun bitmapLimits(limits: BitmapLimits): String = listOf(
+            limits.maxStrikes,
+            limits.maxWidth,
+            limits.maxHeight,
+            limits.maxPixels,
+            limits.maxCompressedBytes,
+            limits.maxDecodedBytes,
+            limits.maxIndexSubtables,
+            limits.maxRecordCount,
+            limits.maxTotalCompressedBytes,
+            limits.maxTotalDecodedBytes,
+            limits.maxIndexTableBytes,
+            limits.maxBitmapTableBytes,
+        ).joinToString(":")
     }
 }
 

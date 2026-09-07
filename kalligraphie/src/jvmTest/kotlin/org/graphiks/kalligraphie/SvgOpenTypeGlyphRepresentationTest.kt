@@ -6,6 +6,7 @@ import org.graphiks.kalligraphie.api.FontGlyphRequest
 import org.graphiks.kalligraphie.api.FontInstanceDescriptor
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontRenderVariantKey
+import org.graphiks.kalligraphie.api.FontRenderVariantSnapshot
 import org.graphiks.kalligraphie.api.FontSourceProvenance
 import org.graphiks.kalligraphie.api.GlyphColor
 import org.graphiks.kalligraphie.api.GlyphId
@@ -28,6 +29,73 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 
 class SvgOpenTypeGlyphRepresentationTest {
+    @Test
+    fun rejectsAnImpossibleNonDefaultSvgAssetKeyBeforeReopeningIt() {
+        val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("SVG reopen route sample")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(svgProfile()))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+        val variant = FontRenderVariantSnapshot(cpalPaletteIndex = 0)
+
+        try {
+            val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
+            val impossibleKey = try {
+                asset.key.copy(variant = variant.key, variantSnapshot = variant)
+            } finally {
+                asset.close()
+            }
+
+            val failure = assertIs<FontOperationResult.Failure>(resolver.reopen(impossibleKey))
+
+            assertIs<FontError.AssetUnavailable>(failure.error)
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
+    fun preservesAnAncestorGroupTransformWhenNormalizingTheTargetGlyph() {
+        val transformed = fixtureBytes().also { bytes ->
+            rewriteLastSvgDocument(bytes) { document ->
+                val wrapped = document
+                    .replace(" xmlns=\"http://www.w3.org/2000/svg\"", "")
+                    .replace(" version=\"1.1\"", "")
+                    .replace(
+                        "<g id=\"glyph27\"",
+                        "<g transform=\"matrix(2 0 0 2 0 0)\"><g id=\"glyph27\"",
+                    )
+                    .replace("</g></svg>", "</g></g></svg>")
+                val padding = document.length - wrapped.length
+                require(padding >= 0) { "Test mutation must not enlarge the SVG document" }
+                wrapped.replace("</svg>", "${" ".repeat(padding)}</svg>")
+            }
+        }
+        val catalog = success(Kalligraphie.embedded(transformed, FontSourceProvenance("SVG inherited-transform sample")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(svgProfile()))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+
+        try {
+            val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
+            try {
+                val paint = assertIs<GlyphRepresentation.Paint>(
+                    success(asset.resolveGlyph(FontGlyphRequest(GlyphId(27)))),
+                ).paint
+
+                assertEquals(
+                    GlyphPaintTransform(240.0, 0.0, 0.0, 240.0, 75.0, -1_900.0),
+                    assertIs<GlyphPaintNode.Transform>(paint.nodes[1]).transform,
+                )
+            } finally {
+                asset.close()
+            }
+        } finally {
+            resolver.close()
+        }
+    }
+
     @Test
     fun normalizesTheOpenTypeSvgRadialGradientAndGlyphTransformWithoutExposingSvgSource() {
         val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Google Fonts color-fonts SVG sample")))

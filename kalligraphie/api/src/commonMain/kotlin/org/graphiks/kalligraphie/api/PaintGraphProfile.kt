@@ -129,11 +129,17 @@ public class PaintGraphProfile(
         if (references > limits.maxReferences) return false
         val paths = paint.nodes.count { node -> node is GlyphPaintNode.SolidOutline || node is GlyphPaintNode.Path }
         if (paths > limits.maxPaths) return false
-        val gradients = paint.nodes.mapNotNull { node -> (node as? GlyphPaintNode.Path)?.brush }.filter { it !is GlyphPaintBrush.Solid }
+        val pathNodes = paint.nodes.filterIsInstance<GlyphPaintNode.Path>()
+        if (pathNodes.sumOf { node -> node.path.commands.size } > limits.maxSvgPathCommands) return false
+        if (paint.nodes.filterIsInstance<GlyphPaintNode.SolidOutline>().any { node -> !outlineProfile.acceptsOutline(node.outline) }) {
+            return false
+        }
+        val gradients = pathNodes.map { node -> node.brush }.filter { it !is GlyphPaintBrush.Solid }
         if (gradients.size > limits.maxGradients) return false
         if (gradients.any { gradient -> gradient.kind() !in acceptedGradientKinds || gradient.spread() !in acceptedGradientSpreads }) {
             return false
         }
+        if (gradients.sumOf { gradient -> gradient.stopCount() } > limits.maxSvgGradientStops) return false
         if (paint.nodes.any { node -> node.kind() !in acceptedNodeKinds }) return false
         if (paint.nodes.filterIsInstance<GlyphPaintNode.Group>().any { group -> group.compositionMode !in acceptedCompositionModes }) {
             return false
@@ -180,6 +186,22 @@ private fun GlyphPaintBrush.spread(): GlyphPaintGradientSpread = when (this) {
     is GlyphPaintBrush.RadialGradient -> spread
     is GlyphPaintBrush.Solid -> error("A solid brush has no gradient spread.")
 }
+
+private fun GlyphPaintBrush.stopCount(): Int = when (this) {
+    is GlyphPaintBrush.LinearGradient -> stops.size
+    is GlyphPaintBrush.RadialGradient -> stops.size
+    is GlyphPaintBrush.Solid -> 0
+}
+
+internal fun OutlineProfile.acceptsOutline(outline: GlyphOutlineIR): Boolean =
+    outline.contours.size <= maxContours &&
+        outline.pointCount <= maxPoints &&
+        outline.components.size <= maxCompositeComponents &&
+        outline.limits.maxBytes <= maxBytes &&
+        outline.limits.maxContours <= maxContours &&
+        outline.limits.maxPoints <= maxPoints &&
+        outline.limits.maxCompositeDepth <= maxCompositeDepth &&
+        outline.limits.maxCompositeComponents <= maxCompositeComponents
 
 private fun GlyphPaintIR.depthFromRoot(): Int {
     fun depth(index: Int): Int = 1 + (nodes[index].children.maxOfOrNull(::depth) ?: 0)

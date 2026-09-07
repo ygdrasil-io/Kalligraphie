@@ -240,7 +240,24 @@ public data class FontRenderAssetKey(
     public val representationProfile: GlyphRepresentationProfile,
     /** Exact immutable catalogue generation through which this asset is reopenable. */
     public val generation: FontCatalogGeneration,
+    /**
+     * Full visual selection required to reopen a non-default render variant.
+     *
+     * A `null` value is the canonical default snapshot and preserves compatibility with keys
+     * created by the key-only acquisition API. Non-default keys retain this portable context so
+     * a resolver never has to infer a palette or foreground color from an opaque key string.
+     */
+    public val variantSnapshot: FontRenderVariantSnapshot? = null,
 ) {
+    init {
+        require(variantSnapshot == null || variantSnapshot.key == variant) {
+            "Render-variant snapshot must match the asset variant key."
+        }
+        require(variant != FontRenderVariantKey.default || variantSnapshot == null) {
+            "The default render variant must not retain redundant snapshot context."
+        }
+    }
+
     /**
      * Outline profile enforced by this asset, or `null` when its selected representation is not
      * an outline. Callers must not substitute a different profile when this value is absent.
@@ -393,6 +410,15 @@ public interface FontRenderAssetHandle {
         cancellationToken: CancellationToken = CancellationToken.none,
     ): FontOperationResult<CertifiedGlyphRepresentation> = when (val result = resolveGlyph(request, cancellationToken)) {
         is FontOperationResult.Success -> {
+            if (!key.representationProfile.acceptsRepresentation(result.value)) {
+                return FontOperationResult.Failure(
+                    FontError.UnsupportedRepresentationProfile(
+                        "Render asset returned a representation incompatible with its selected profile.",
+                        FontDiagnosticLocation.Glyph(request.glyphId),
+                    ),
+                    result.diagnostics,
+                )
+            }
             val route = result.value.materializationRoute()
             try {
                 FontOperationResult.Success(
@@ -440,7 +466,15 @@ public interface FontRenderAssetHandle {
         }
         return when (val result = resolveGlyph(FontGlyphRequest(certificate.glyphId), cancellationToken)) {
             is FontOperationResult.Success -> {
-                if (result.value.materializationRoute() != certificate.route) {
+                if (!key.representationProfile.acceptsRepresentation(result.value)) {
+                    FontOperationResult.Failure(
+                        FontError.UnsupportedRepresentationProfile(
+                            "Certified glyph resolution returned a representation incompatible with its selected profile.",
+                            FontDiagnosticLocation.Glyph(certificate.glyphId.value),
+                        ),
+                        result.diagnostics,
+                    )
+                } else if (result.value.materializationRoute() != certificate.route) {
                     FontOperationResult.Failure(
                         FontError.InvalidFontData(
                             "Certified glyph resolution returned a route different from its certificate.",
@@ -488,6 +522,23 @@ private fun GlyphRepresentation.materializationRoute(): GlyphMaterializationRout
     is GlyphRepresentation.Outline -> GlyphMaterializationRoute.OUTLINE
     is GlyphRepresentation.Paint -> GlyphMaterializationRoute.PAINT_GRAPH
     is GlyphRepresentation.Bitmap -> GlyphMaterializationRoute.BITMAP
+}
+
+private fun GlyphRepresentationProfile.acceptsRepresentation(representation: GlyphRepresentation): Boolean = when (this) {
+    is OutlineProfile -> representation is GlyphRepresentation.Empty ||
+        (representation is GlyphRepresentation.Outline && acceptsOutline(representation.outline))
+    is PaintGraphProfile -> representation is GlyphRepresentation.Empty ||
+        (representation is GlyphRepresentation.Paint && accepts(representation.paint))
+    is BitmapProfile -> representation is GlyphRepresentation.Empty ||
+        (representation is GlyphRepresentation.Bitmap &&
+            representation.bitmap.strike == strike &&
+            representation.bitmap.pixelFormat in acceptedPixelFormats &&
+            representation.bitmap.colorSpace in acceptedColorSpaces &&
+            representation.bitmap.width <= limits.maxWidth &&
+            representation.bitmap.height <= limits.maxHeight &&
+            representation.bitmap.width.toLong() * representation.bitmap.height.toLong() <= limits.maxPixels.toLong() &&
+            representation.bitmap.decodedByteCount <= limits.maxDecodedBytes)
+    is NativeHandleProfile -> false
 }
 
 /** Selects the layout size and geometric interpretation for a font instance. */

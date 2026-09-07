@@ -97,7 +97,7 @@ internal class TrueTypeFace(
         )
 }
 
-private data class TrueTypeFontInstance(
+internal data class TrueTypeFontInstance(
     override val key: FontInstanceKey,
     private val descriptor: FontInstanceDescriptor,
     private val resource: PreparedFontResource,
@@ -266,6 +266,7 @@ private data class TrueTypeFontInstance(
                             variant = renderVariant.key,
                             representationProfile = profile,
                             generation = resolver.generation,
+                            variantSnapshot = renderVariant.takeUnless { it == FontRenderVariantSnapshot.default },
                         ),
                         profile = profile,
                         colorData = colorData.value,
@@ -345,6 +346,12 @@ private data class TrueTypeFontInstance(
             ?: return failure(FontError.UnsupportedRepresentationProfile("The font has no EBLC table.", FontDiagnosticLocation.FaceId(faceId)))
         val ebdtRecord = parsedFont.tableRecords["EBDT"]
             ?: return failure(FontError.UnsupportedRepresentationProfile("The font has no EBDT table.", FontDiagnosticLocation.FaceId(faceId)))
+        if (eblcRecord.length > profile.limits.maxIndexTableBytes.toLong()) {
+            return failure(FontError.ResourceLimitExceeded("EBLC table-byte limit exceeded.", FontDiagnosticLocation.Table("EBLC")))
+        }
+        if (ebdtRecord.length > profile.limits.maxBitmapTableBytes.toLong()) {
+            return failure(FontError.ResourceLimitExceeded("EBDT table-byte limit exceeded.", FontDiagnosticLocation.Table("EBDT")))
+        }
         val sourceBytes = resource.preparedFont.copySourceBytes()
         val eblc = slice(sourceBytes, eblcRecord)
             ?: return failure(FontError.InvalidFontData("EBLC table exceeds embedded source bytes.", FontDiagnosticLocation.Table("EBLC")))

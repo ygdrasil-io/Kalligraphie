@@ -70,6 +70,27 @@ class EbdtFormatOneGlyphRepresentationTest {
     }
 
     @Test
+    fun rejectsTheWholeSelectedStrikeWhenItsAggregateDecodedPixelBudgetIsExceeded() {
+        val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(
+            listOf(bitmapProfile(maxTotalDecodedBytes = 168)),
+        )
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+
+        try {
+            val failure = assertIs<FontOperationResult.Failure>(
+                instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements),
+            )
+
+            assertIs<FontError.ResourceLimitExceeded>(failure.error)
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
     fun certifiesTheBitmapRouteAndResolvesTheExactCertificateWithoutASecondRouteNegotiation() {
         val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
         val requirements = FontAccessRequirementsSnapshot.renderable(listOf(bitmapProfile()))
@@ -88,6 +109,33 @@ class EbdtFormatOneGlyphRepresentationTest {
                 assertIs<GlyphRepresentation.Bitmap>(resolved)
             } finally {
                 asset.close()
+            }
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
+    fun reopensTheSameCertifiedBitmapRouteFromItsLiveGenerationResolver() {
+        val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(bitmapProfile()))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+
+        try {
+            val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
+            val certificate = try {
+                success(asset.resolveGlyphCertified(FontGlyphRequest(GlyphId(3)))).certificate
+            } finally {
+                asset.close()
+            }
+            val reopenedResult = resolver.reopen(certificate.assetKey)
+            val reopened = success(reopenedResult)
+            try {
+                assertBitmap(assertIs<GlyphRepresentation.Bitmap>(success(reopened.resolveCertifiedGlyph(certificate))).bitmap)
+            } finally {
+                reopened.close()
             }
         } finally {
             resolver.close()
@@ -139,7 +187,10 @@ class EbdtFormatOneGlyphRepresentationTest {
         assertContentEquals(expectedPixels(), bitmap.copyDecodedPixels())
     }
 
-    private fun bitmapProfile(maxWidth: Int = 16): BitmapProfile = BitmapProfile(
+    private fun bitmapProfile(
+        maxWidth: Int = 16,
+        maxTotalDecodedBytes: Int = 4_096,
+    ): BitmapProfile = BitmapProfile(
         strike = BitmapStrike(16, 16),
         acceptedPixelFormats = listOf(BitmapPixelFormat.ALPHA_8),
         acceptedColorSpaces = listOf(GlyphColorSpace.SRGB),
@@ -150,6 +201,8 @@ class EbdtFormatOneGlyphRepresentationTest {
             maxPixels = 256,
             maxCompressedBytes = 64,
             maxDecodedBytes = 256,
+            maxTotalCompressedBytes = 4_096,
+            maxTotalDecodedBytes = maxTotalDecodedBytes,
         ),
     )
 
@@ -175,6 +228,9 @@ class EbdtFormatOneGlyphRepresentationTest {
             "Skia EBDT format 1 fixture is missing"
         }.use { input -> input.readBytes() }
 
-    private fun <T> success(result: FontOperationResult<T>): T =
-        assertIs<FontOperationResult.Success<T>>(result).value
+    private fun <T> success(result: FontOperationResult<T>): T = when (result) {
+        is FontOperationResult.Success -> result.value
+        is FontOperationResult.Failure -> error("Unexpected font failure ${result.error.code}: ${result.error.message}")
+        is FontOperationResult.Cancelled -> error("Unexpected font cancellation")
+    }
 }
