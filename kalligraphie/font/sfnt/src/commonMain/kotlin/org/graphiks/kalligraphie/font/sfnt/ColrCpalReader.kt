@@ -117,6 +117,27 @@ public object ColrCpalReader {
             readUInt16(cpalTable, 0)?.toInt() == 0
 
     /**
+     * Returns whether the complete COLR/CPAL version 0 table pair is structurally readable.
+     *
+     * This validation checks every offset, palette and layer reference without retaining decoded
+     * palettes or paint records. Catalogues use it before publishing a paint capability; [read]
+     * still applies the consumer's stricter resource limits before an asset is acquired.
+     *
+     * @param colrTable exact bytes of the OpenType `COLR` table.
+     * @param cpalTable exact bytes of the OpenType `CPAL` table.
+     * @param glyphCount optional face glyph count used to reject invalid COLR glyph references.
+     */
+    public fun hasStructurallyValidVersionZeroTables(
+        colrTable: ByteArray,
+        cpalTable: ByteArray,
+        glyphCount: Int? = null,
+    ): Boolean {
+        if (glyphCount != null && glyphCount <= 0) return false
+        val paletteEntryCount = validateCpalStructure(cpalTable) ?: return false
+        return validateColrStructure(colrTable, paletteEntryCount, glyphCount)
+    }
+
+    /**
      * Parses one COLR/CPAL version 0 pair with [limits].
      *
      * @param colrTable exact bytes of the OpenType `COLR` table.
@@ -197,6 +218,24 @@ public object ColrCpalReader {
         return FontOperationResult.Success(palettes)
     }
 
+    private fun validateCpalStructure(table: ByteArray): Int? {
+        if (table.size < CPAL_V0_HEADER_LENGTH) return null
+        if (readUInt16(table, 0)?.toInt() != 0) return null
+        val entryCount = readUInt16(table, 2)?.toInt() ?: return null
+        val paletteCount = readUInt16(table, 4)?.toInt() ?: return null
+        val colorRecordCount = readUInt16(table, 6)?.toInt() ?: return null
+        val colorRecordsOffset = readUInt32(table, 8)?.toLong() ?: return null
+        if (entryCount == 0 || paletteCount == 0) return null
+        val paletteIndicesEnd = checkedRangeEnd(CPAL_V0_HEADER_LENGTH, paletteCount * 2, table.size) ?: return null
+        val colorRecordsEnd = checkedRangeEnd(colorRecordsOffset, colorRecordCount.toLong() * COLOR_RECORD_LENGTH, table.size) ?: return null
+        if (colorRecordsEnd < paletteIndicesEnd) return null
+        repeat(paletteCount) { paletteIndex ->
+            val firstColorRecord = readUInt16(table, CPAL_V0_HEADER_LENGTH + paletteIndex * 2)?.toInt() ?: return null
+            if (firstColorRecord > colorRecordCount || entryCount > colorRecordCount - firstColorRecord) return null
+        }
+        return entryCount
+    }
+
     private fun readColr(
         table: ByteArray,
         paletteEntryCount: Int,
@@ -253,6 +292,41 @@ public object ColrCpalReader {
             layersByGlyph[key] = layers.subList(firstLayer, firstLayer + layerCountForGlyph).toList()
         }
         return FontOperationResult.Success(layersByGlyph)
+    }
+
+    private fun validateColrStructure(
+        table: ByteArray,
+        paletteEntryCount: Int,
+        glyphCount: Int?,
+    ): Boolean {
+        if (table.size < COLR_V0_HEADER_LENGTH) return false
+        if (readUInt16(table, 0)?.toInt() != 0) return false
+        val baseGlyphCount = readUInt16(table, 2)?.toInt() ?: return false
+        val baseGlyphOffset = readUInt32(table, 4)?.toLong() ?: return false
+        val layerOffset = readUInt32(table, 8)?.toLong() ?: return false
+        val layerCount = readUInt16(table, 12)?.toInt() ?: return false
+        if (checkedRangeEnd(baseGlyphOffset, baseGlyphCount.toLong() * BASE_GLYPH_RECORD_LENGTH, table.size) == null) return false
+        if (checkedRangeEnd(layerOffset, layerCount.toLong() * LAYER_RECORD_LENGTH, table.size) == null) return false
+
+        repeat(layerCount) { layerIndex ->
+            val offset = (layerOffset + layerIndex.toLong() * LAYER_RECORD_LENGTH).toInt()
+            val glyphId = readUInt16(table, offset)?.toInt() ?: return false
+            val paletteIndex = readUInt16(table, offset + 2)?.toInt() ?: return false
+            if (glyphCount != null && glyphId !in 0 until glyphCount) return false
+            if (paletteIndex != ColrV0Layer.foregroundColorIndex && paletteIndex !in 0 until paletteEntryCount) return false
+        }
+
+        val baseGlyphIds = HashSet<Int>(baseGlyphCount)
+        repeat(baseGlyphCount) { recordIndex ->
+            val offset = (baseGlyphOffset + recordIndex.toLong() * BASE_GLYPH_RECORD_LENGTH).toInt()
+            val glyphId = readUInt16(table, offset)?.toInt() ?: return false
+            val firstLayer = readUInt16(table, offset + 2)?.toInt() ?: return false
+            val layerCountForGlyph = readUInt16(table, offset + 4)?.toInt() ?: return false
+            if (glyphCount != null && glyphId !in 0 until glyphCount) return false
+            if (layerCountForGlyph == 0 || firstLayer > layerCount || layerCountForGlyph > layerCount - firstLayer) return false
+            if (!baseGlyphIds.add(glyphId)) return false
+        }
+        return true
     }
 
     private fun limit(observed: Int, maximum: Int, message: String, tag: String): FontOperationResult.Failure? =

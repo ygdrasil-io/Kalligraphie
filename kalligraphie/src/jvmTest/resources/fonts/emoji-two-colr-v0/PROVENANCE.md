@@ -11,7 +11,8 @@
   `b5ba9f3a70f5d674f85d12f3f32e846f396965753aaed5b3d1e2ffee3fe94ef4`.
 - Licence : CC-BY-4.0 ; attribution EmojiTwo / EmojiOne 2.2 / Ranks.com et
   communauté EmojiTwo, comme détaillé dans `LICENSE.md`.
-- Format audité : TrueType avec `COLR` version 0 et `CPAL` version 0.
+- Format vérifié structurellement : TrueType avec `COLR` version 0 et `CPAL`
+  version 0.
 
 ## Oracle indépendant
 
@@ -29,5 +30,5 @@ avant l’ajout du test :
 Ces valeurs ont été extraites hors de l’implémentation testée par un lecteur
 structural Python 3.14.7 (`struct`, entiers big-endian) et recoupées avec
 Fontconfig 2.18.3 pour l’identité `EmojiTwo COLRv0 Regular`. Une validation
-humaine explicite de cet oracle reste requise avant de présenter la fixture
-comme auditée pour une publication.
+humaine explicite de cet oracle reste requise avant toute publication qui
+revendiquerait cette validation.

@@ -22,7 +22,7 @@ import kotlin.test.assertIs
 
 class ColrV0GlyphRepresentationTest {
     @Test
-    fun materializesEmojiTwoGrinningFaceIntoTheAuditedLayeredPaintGraph() {
+    fun materializesEmojiTwoGrinningFaceIntoTheIndependentlySpecifiedLayeredPaintGraph() {
         val catalog = success(
             Kalligraphie.embedded(
                 fixtureBytes(),
@@ -159,8 +159,20 @@ class ColrV0GlyphRepresentationTest {
     fun doesNotAdvertisePaintGraphForAnUnsupportedColrVersion() {
         val catalog = success(
             Kalligraphie.embedded(
-                fixtureBytes().withTableUInt16("COLR", 1),
+                fixtureBytes().withTableUInt16("COLR", value = 1),
                 FontSourceProvenance("EmojiTwo COLRv0 with an unsupported COLR version"),
+            ),
+        )
+
+        assertFalse(catalog.faces.single().capabilities.paintGraph)
+    }
+
+    @Test
+    fun doesNotAdvertisePaintGraphForAStructurallyInvalidCpalTable() {
+        val catalog = success(
+            Kalligraphie.embedded(
+                fixtureBytes().withTableUInt16("CPAL", tableRelativeOffset = 2, value = 0),
+                FontSourceProvenance("EmojiTwo COLRv0 with an empty CPAL palette"),
             ),
         )
 
@@ -200,7 +212,11 @@ class ColrV0GlyphRepresentationTest {
         assertIs<FontOperationResult.Success<T>>(result).value
 }
 
-private fun ByteArray.withTableUInt16(tag: String, value: Int): ByteArray = copyOf().also { bytes ->
+private fun ByteArray.withTableUInt16(
+    tag: String,
+    tableRelativeOffset: Int = 0,
+    value: Int,
+): ByteArray = copyOf().also { bytes ->
     val tableCount = (bytes[4].toInt() and 0xFF shl 8) or (bytes[5].toInt() and 0xFF)
     val recordOffset = (0 until tableCount)
         .map { index -> 12 + index * 16 }
@@ -210,6 +226,6 @@ private fun ByteArray.withTableUInt16(tag: String, value: Int): ByteArray = copy
             (bytes[recordOffset + 9].toInt() and 0xFF shl 16) or
             (bytes[recordOffset + 10].toInt() and 0xFF shl 8) or
             (bytes[recordOffset + 11].toInt() and 0xFF)
-    bytes[tableOffset] = (value ushr 8).toByte()
-    bytes[tableOffset + 1] = value.toByte()
+    bytes[tableOffset + tableRelativeOffset] = (value ushr 8).toByte()
+    bytes[tableOffset + tableRelativeOffset + 1] = value.toByte()
 }

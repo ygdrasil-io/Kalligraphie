@@ -166,7 +166,11 @@ public class EmbeddedFontCatalog(
         val sourceBytes = resource.preparedFont.copySourceBytes()
         val colr = slice(sourceBytes, colrRecord) ?: return false
         val cpal = slice(sourceBytes, cpalRecord) ?: return false
-        return ColrCpalReader.hasSupportedVersionZeroHeaders(colr, cpal)
+        return ColrCpalReader.hasStructurallyValidVersionZeroTables(
+            colrTable = colr,
+            cpalTable = cpal,
+            glyphCount = parsedFont.metadata.glyphCount,
+        )
     }
 
     private fun failure(error: FontError, diagnostics: List<FontDiagnostic> = listOf(error.toDiagnostic())): FontOperationResult.Failure =
