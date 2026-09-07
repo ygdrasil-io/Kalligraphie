@@ -163,7 +163,9 @@ internal class TrueTypeRenderAssetHandle(
     private var resourceLease: PreparedFontResourceLease?,
     override val key: FontRenderAssetKey,
 ) : FontRenderAssetHandle {
-    private val profile: org.graphiks.kalligraphie.api.OutlineProfile = key.outlineProfile
+    private val profile: org.graphiks.kalligraphie.api.OutlineProfile = requireNotNull(key.outlineProfile) {
+        "TrueTypeRenderAssetHandle requires an outline asset key."
+    }
     private val lifecycle = FontHandleLifecycle(::releaseResourceLease)
 
     override fun detach(): FontOperationResult<FontRenderAssetHandle> {
@@ -176,7 +178,7 @@ internal class TrueTypeRenderAssetHandle(
                 TrueTypeRenderAssetHandle(
                     faceId = faceId,
                     resourceLease = detachedResourceLease,
-                    key = key.copy(outlineProfile = profile.copy()),
+                    key = key.copy(representationProfile = profile.copy()),
                 ),
             )
         } finally {

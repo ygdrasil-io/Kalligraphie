@@ -213,7 +213,7 @@ internal class EmbeddedFontAssetResolver(
     private fun isReopenableEmbeddedKey(key: FontRenderAssetKey): Boolean {
         val instance = key.fontInstanceKey
         return key.variant == FontRenderVariantKey.default &&
-            key.outlineProfile.schemaVersion == 1 &&
+            (key.representationProfile as? org.graphiks.kalligraphie.api.OutlineProfile)?.schemaVersion == 1 &&
             instance.face in resources &&
             instance.interpretation.pipelineId == "org.graphiks.kalligraphie.true-type" &&
             instance.interpretation.version == "1" &&

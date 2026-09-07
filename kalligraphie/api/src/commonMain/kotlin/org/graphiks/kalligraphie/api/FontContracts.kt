@@ -227,20 +227,38 @@ public data class FontRenderVariantKey(
  * Portable identity of one acquired render asset.
  *
  * The key binds the exact catalog generation, font instance, render variant, and immutable
- * outline profile used by an asset. It owns only portable values, carries no native handle, and
- * is safe to retain or share between threads after the corresponding asset has been closed. A
- * key does not keep the catalog, resolver, or asset resource alive.
+ * representation profile used by an asset. It owns only portable values, carries no native
+ * handle, and is safe to retain or share between threads after the corresponding asset has been
+ * closed. A key does not keep the catalog, resolver, or asset resource alive.
  */
 public data class FontRenderAssetKey(
     /** Exact font instance served by the asset. */
     public val fontInstanceKey: FontInstanceKey,
     /** Render variant selected when the asset was acquired. */
     public val variant: FontRenderVariantKey,
-    /** Outline representation profile enforced by the asset. */
-    public val outlineProfile: OutlineProfile,
+    /** Immutable representation profile enforced by the asset. */
+    public val representationProfile: GlyphRepresentationProfile,
     /** Exact immutable catalogue generation through which this asset is reopenable. */
     public val generation: FontCatalogGeneration,
-)
+) {
+    /**
+     * Outline profile enforced by this asset, or `null` when its selected representation is not
+     * an outline. Callers must not substitute a different profile when this value is absent.
+     */
+    public val outlineProfile: OutlineProfile?
+        get() = representationProfile as? OutlineProfile
+
+    /**
+     * Creates an outline asset key using the compatibility constructor retained for existing
+     * outline-only consumers.
+     */
+    public constructor(
+        fontInstanceKey: FontInstanceKey,
+        variant: FontRenderVariantKey,
+        outlineProfile: OutlineProfile,
+        generation: FontCatalogGeneration,
+    ) : this(fontInstanceKey, variant, outlineProfile as GlyphRepresentationProfile, generation)
+}
 
 /** Selects a glyph by its numeric identifier. */
 public data class FontGlyphRequest(
@@ -319,7 +337,7 @@ public interface FontAssetResolverHandle {
  * successful detached handle and must close both handles independently.
  */
 public interface FontRenderAssetHandle {
-    /** Portable identity of this exact instance, variant, and outline profile. */
+    /** Portable identity of this exact instance, variant, and representation profile. */
     public val key: FontRenderAssetKey
 
     /** Identifier of the face served by this asset. */
