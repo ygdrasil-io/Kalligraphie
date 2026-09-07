@@ -23,10 +23,18 @@ import org.graphiks.kalligraphie.api.FontInstanceDescriptor
 import org.graphiks.kalligraphie.api.FontSource
 import org.graphiks.kalligraphie.api.FontSourceId
 import org.graphiks.kalligraphie.api.FontOperationResult.Success
+import org.graphiks.kalligraphie.api.BitmapGlyphIR
+import org.graphiks.kalligraphie.api.BitmapProfile
 import org.graphiks.kalligraphie.api.GlyphOutlineCommand
 import org.graphiks.kalligraphie.api.GlyphOutlineIR
+import org.graphiks.kalligraphie.api.GlyphPaintIR
+import org.graphiks.kalligraphie.api.GlyphPaintNode
 import org.graphiks.kalligraphie.api.GlyphRepresentation
 import org.graphiks.kalligraphie.api.GlyphRepresentationKey
+import org.graphiks.kalligraphie.api.GlyphRepresentationProfile
+import org.graphiks.kalligraphie.api.NativeHandleProfile
+import org.graphiks.kalligraphie.api.OutlineProfile
+import org.graphiks.kalligraphie.api.PaintGraphProfile
 import org.graphiks.kalligraphie.api.sortedDiagnostics
 import org.graphiks.kalligraphie.api.toDiagnostic
 import org.graphiks.kalligraphie.font.scaler.PreparedTrueTypeFont
@@ -421,17 +429,17 @@ internal class PreparedFontResource(
     cachePolicy: FontMaterializationCachePolicy,
 ) {
     private val leaseCount = AtomicInt(0)
-    private val outlineRepresentations = WeightedEvictableCache<GlyphRepresentationKey, Success<GlyphRepresentation>>(
+    private val representations = WeightedEvictableCache<GlyphRepresentationKey, Success<GlyphRepresentation>>(
         cachePolicy.maxEvictableBytesPerFace,
     )
 
-    internal fun cachedOutline(key: GlyphRepresentationKey): Success<GlyphRepresentation>? = outlineRepresentations.get(key)
+    internal fun cachedRepresentation(key: GlyphRepresentationKey): Success<GlyphRepresentation>? = representations.get(key)
 
-    internal fun cacheOutline(
+    internal fun cacheRepresentation(
         key: GlyphRepresentationKey,
         result: Success<GlyphRepresentation>,
     ) {
-        outlineRepresentations.put(key, result, result.estimatedRetainedBytes())
+        representations.put(key, result, cachedRepresentationRetainedBytes(key, result))
     }
 
     internal fun acquireLease(): PreparedFontResourceLease {
@@ -449,22 +457,86 @@ internal class PreparedFontResource(
             val current = leaseCount.load()
             check(current > 0) { "Prepared font resource lease released more than once." }
             if (leaseCount.compareAndSet(current, current - 1)) {
-                if (current == 1) outlineRepresentations.clear()
+                if (current == 1) representations.clear()
                 return
             }
         }
     }
 }
 
+internal fun cachedRepresentationRetainedBytes(
+    key: GlyphRepresentationKey,
+    result: Success<GlyphRepresentation>,
+): Long =
+    CACHE_ENTRY_ENVELOPE_BYTES
+        .saturatingAdd(key.estimatedRetainedBytes())
+        .saturatingAdd(result.estimatedRetainedBytes())
+
 private fun Success<GlyphRepresentation>.estimatedRetainedBytes(): Long =
     value.estimatedRetainedBytes().saturatingAdd(diagnostics.estimatedRetainedBytes())
 
-private fun GlyphRepresentation.estimatedRetainedBytes(): Long = when (this) {
+private fun GlyphRepresentationKey.estimatedRetainedBytes(): Long {
+    val asset = assetKey
+    var total = 80L
+    total = total.saturatingAdd(profile.parameters.estimatedRetainedBytes())
+    total = total.saturatingAdd(routeParameters.estimatedRetainedBytes())
+    total = total.saturatingAdd(asset.estimatedRetainedBytes())
+    return total
+}
+
+private fun FontRenderAssetKey.estimatedRetainedBytes(): Long {
+    val instance = fontInstanceKey
+    var total = 112L
+    total = total.saturatingAdd(variant.value.estimatedRetainedBytes())
+    total = total.saturatingAdd(generation.provider.value.estimatedRetainedBytes())
+    total = total.saturatingAdd(generation.value.estimatedRetainedBytes())
+    total = total.saturatingAdd(representationProfile.estimatedRetainedBytes())
+    total = total.saturatingAdd(variantSnapshot?.estimatedRetainedBytes() ?: 0L)
+    total = total.saturatingAdd(instance.face.estimatedRetainedBytes())
+    total = total.saturatingAdd(instance.interpretation.pipelineId.estimatedRetainedBytes())
+    total = total.saturatingAdd(instance.interpretation.version.estimatedRetainedBytes())
+    total = total.saturatingAdd(instance.geometry.normalizedAxes.size.toLong().saturatingMultiply(24L))
+    for (axis in instance.geometry.normalizedAxes) {
+        total = total.saturatingAdd(axis.tag.estimatedRetainedBytes())
+    }
+    return total
+}
+
+private fun org.graphiks.kalligraphie.api.FontFaceId.estimatedRetainedBytes(): Long =
+    48L.saturatingAdd(source.estimatedRetainedBytes())
+
+private fun FontSourceId.estimatedRetainedBytes(): Long = when (this) {
+    is FontSourceId.Portable -> 32L.saturatingAdd(contentDigest.value.estimatedRetainedBytes())
+    is FontSourceId.Opaque -> 48L
+        .saturatingAdd(providerId.estimatedRetainedBytes())
+        .saturatingAdd(catalogGeneration.estimatedRetainedBytes())
+        .saturatingAdd(sourceToken.estimatedRetainedBytes())
+}
+
+private fun GlyphRepresentationProfile.estimatedRetainedBytes(): Long = when (this) {
+    is OutlineProfile -> 80L
+    is PaintGraphProfile -> 112L
+        .saturatingAdd(acceptedNodeKinds.size.toLong().saturatingMultiply(8L))
+        .saturatingAdd(acceptedCompositionModes.size.toLong().saturatingMultiply(8L))
+    is BitmapProfile -> 112L
+        .saturatingAdd(acceptedPixelFormats.size.toLong().saturatingMultiply(8L))
+        .saturatingAdd(acceptedColorSpaces.size.toLong().saturatingMultiply(8L))
+    is NativeHandleProfile -> 64L
+        .saturatingAdd(bridgeKind.estimatedRetainedBytes())
+        .saturatingAdd(bridgeVersion.estimatedRetainedBytes())
+}
+
+private fun FontRenderVariantSnapshot.estimatedRetainedBytes(): Long =
+    40L.saturatingAdd(if (foregroundColor == null) 0L else 16L)
+
+private fun String.estimatedRetainedBytes(): Long =
+    24L.saturatingAdd(length.toLong().saturatingMultiply(2L))
+
+internal fun GlyphRepresentation.estimatedRetainedBytes(): Long = when (this) {
     GlyphRepresentation.Empty -> 1L
     is GlyphRepresentation.Outline -> outline.estimatedRetainedBytes()
-    is GlyphRepresentation.Paint,
-    is GlyphRepresentation.Bitmap,
-    -> 1L
+    is GlyphRepresentation.Paint -> paint.estimatedRetainedBytes()
+    is GlyphRepresentation.Bitmap -> bitmap.estimatedRetainedBytes()
 }
 
 private fun GlyphOutlineIR.estimatedRetainedBytes(): Long {
@@ -488,6 +560,24 @@ private fun GlyphOutlineIR.estimatedRetainedBytes(): Long {
     return total
 }
 
+private fun GlyphPaintIR.estimatedRetainedBytes(): Long {
+    var total = 80L
+    for (node in nodes) {
+        total = total.saturatingAdd(32L)
+        total = total.saturatingAdd(
+            when (node) {
+                is GlyphPaintNode.SolidOutline -> node.outline.estimatedRetainedBytes().saturatingAdd(16L)
+                is GlyphPaintNode.Path -> node.path.estimatedByteSize.toLong().saturatingAdd(16L)
+                is GlyphPaintNode.Group -> node.children.size.toLong().saturatingMultiply(4L).saturatingAdd(16L)
+            },
+        )
+    }
+    return total
+}
+
+private fun BitmapGlyphIR.estimatedRetainedBytes(): Long =
+    64L.saturatingAdd(decodedByteCount.toLong())
+
 private fun List<FontDiagnostic>.estimatedRetainedBytes(): Long = fold(0L) { total, diagnostic ->
     total.saturatingAdd(64L)
         .saturatingAdd(diagnostic.code.length.toLong() * 2L)
@@ -496,6 +586,11 @@ private fun List<FontDiagnostic>.estimatedRetainedBytes(): Long = fold(0L) { tot
 
 private fun Long.saturatingAdd(other: Long): Long =
     if (other > Long.MAX_VALUE - this) Long.MAX_VALUE else this + other
+
+private fun Long.saturatingMultiply(other: Long): Long =
+    if (this == 0L || other == 0L) 0L else if (this > Long.MAX_VALUE / other) Long.MAX_VALUE else this * other
+
+private const val CACHE_ENTRY_ENVELOPE_BYTES: Long = 120L
 
 @OptIn(ExperimentalAtomicApi::class)
 internal class PreparedFontResourceLease(

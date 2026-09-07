@@ -47,6 +47,8 @@ import org.graphiks.kalligraphie.font.sfnt.SvgOpenTypeData
 import org.graphiks.kalligraphie.font.sfnt.SvgOpenTypeReader
 import org.graphiks.kalligraphie.font.sfnt.slice
 
+private const val EBDT_FORMAT_ONE_ROUTE_PARAMETERS: String = "eblc-v2;ebdt-v2;index-format-1;image-format-1"
+
 internal class TrueTypeFace(
     private val faceId: FontFaceId,
     private val generation: FontCatalogGeneration,
@@ -451,7 +453,7 @@ internal class TrueTypeRenderAssetHandle(
                 variant = key.variant,
                 profile = GlyphRepresentationProfileKey.outline(profile),
             )
-            resource.cachedOutline(representationKey)?.let { cached -> return cached }
+            resource.cachedRepresentation(representationKey)?.let { cached -> return cached }
             val outline = when (val result = preparedFont.readGlyphOutline(glyphId, profile, cancellationToken)) {
                 is FontOperationResult.Success -> result.value
                 is FontOperationResult.Failure -> return result
@@ -463,7 +465,7 @@ internal class TrueTypeRenderAssetHandle(
             when (val materialized = OutlineMaterializer.materialize(outline, profile, cancellationToken)) {
                 is FontOperationResult.Success -> {
                     if (cancellationToken.isCancellationRequested()) FontOperationResult.Cancelled()
-                    else materialized.also { success -> resource.cacheOutline(representationKey, success) }
+                    else materialized.also { success -> resource.cacheRepresentation(representationKey, success) }
                 }
 
                 is FontOperationResult.Failure -> materialized
@@ -528,9 +530,18 @@ internal class SvgOpenTypeRenderAssetHandle(
             ?: return failure(FontError.ResourceClosed("Render asset is closed."))
         return try {
             if (cancellationToken.isCancellationRequested()) return FontOperationResult.Cancelled()
-            if (resourceLease == null) return failure(FontError.ResourceClosed("Render asset is closed."))
+            val resource = resourceLease?.resource
+                ?: return failure(FontError.ResourceClosed("Render asset is closed."))
             if (request.glyphId !in 0 until glyphCount) return failure(FontError.GlyphOutOfRange(request.glyphId))
-            val representation = when (val paint = svgData.glyphPaint(GlyphId(request.glyphId))) {
+            val glyphId = GlyphId(request.glyphId)
+            val representationKey = GlyphRepresentationKey(
+                assetKey = key,
+                glyphId = glyphId,
+                variant = key.variant,
+                profile = GlyphRepresentationProfileKey.paintGraph(profile),
+            )
+            resource.cachedRepresentation(representationKey)?.let { cached -> return cached }
+            val representation = when (val paint = svgData.glyphPaint(glyphId)) {
                 null,
                 SvgGlyphPaint.Empty,
                 -> GlyphRepresentation.Empty
@@ -538,7 +549,7 @@ internal class SvgOpenTypeRenderAssetHandle(
                 is SvgGlyphPaint.Paint -> GlyphRepresentation.Paint(paint.paint)
             }
             if (cancellationToken.isCancellationRequested()) FontOperationResult.Cancelled()
-            else FontOperationResult.Success(representation)
+            else FontOperationResult.Success(representation).also { success -> resource.cacheRepresentation(representationKey, success) }
         } finally {
             lease.release()
         }
@@ -603,9 +614,19 @@ internal class ColrV0RenderAssetHandle(
             if (cancellationToken.isCancellationRequested()) return FontOperationResult.Cancelled()
             val preparedFont = resourceLease?.preparedFont
                 ?: return failure(FontError.ResourceClosed("Render asset is closed."))
-            val layers = colorData.layersFor(GlyphId(request.glyphId))
+            val resource = resourceLease?.resource
+                ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+            val glyphId = GlyphId(request.glyphId)
+            val representationKey = GlyphRepresentationKey(
+                assetKey = key,
+                glyphId = glyphId,
+                variant = key.variant,
+                profile = GlyphRepresentationProfileKey.paintGraph(profile),
+            )
+            resource.cachedRepresentation(representationKey)?.let { cached -> return cached }
+            val layers = colorData.layersFor(glyphId)
             val materializedGlyphIds = if (layers.isEmpty()) {
-                listOf(ColrV0Layer(GlyphId(request.glyphId), ColrV0Layer.foregroundColorIndex))
+                listOf(ColrV0Layer(glyphId, ColrV0Layer.foregroundColorIndex))
             } else {
                 layers
             }
@@ -626,23 +647,28 @@ internal class ColrV0RenderAssetHandle(
                 val color = if (layer.paletteIndex == ColrV0Layer.foregroundColorIndex) foregroundColor else palette[layer.paletteIndex]
                 nodes += GlyphPaintNode.SolidOutline(outlineIr, color)
             }
-            if (nodes.isEmpty()) return FontOperationResult.Success(GlyphRepresentation.Empty)
-            val root = if (nodes.size == 1) {
-                0
+            val representation = if (nodes.isEmpty()) {
+                GlyphRepresentation.Empty
             } else {
-                nodes += GlyphPaintNode.Group((nodes.indices).toList())
-                nodes.lastIndex
+                val root = if (nodes.size == 1) {
+                    0
+                } else {
+                    nodes += GlyphPaintNode.Group((nodes.indices).toList())
+                    nodes.lastIndex
+                }
+                val paint = GlyphPaintIR(schemaVersion = profile.schemaVersion, rootNode = root, nodes = nodes)
+                if (!profile.accepts(paint)) {
+                    return failure(
+                        FontError.ResourceLimitExceeded(
+                            "COLR version 0 paint graph exceeds the selected profile.",
+                            FontDiagnosticLocation.Glyph(request.glyphId),
+                        ),
+                    )
+                }
+                GlyphRepresentation.Paint(paint)
             }
-            val paint = GlyphPaintIR(schemaVersion = profile.schemaVersion, rootNode = root, nodes = nodes)
-            if (!profile.accepts(paint)) {
-                return failure(
-                    FontError.ResourceLimitExceeded(
-                        "COLR version 0 paint graph exceeds the selected profile.",
-                        FontDiagnosticLocation.Glyph(request.glyphId),
-                    ),
-                )
-            }
-            FontOperationResult.Success(GlyphRepresentation.Paint(paint))
+            if (cancellationToken.isCancellationRequested()) FontOperationResult.Cancelled()
+            else FontOperationResult.Success(representation).also { success -> resource.cacheRepresentation(representationKey, success) }
         } finally {
             lease.release()
         }
@@ -697,11 +723,29 @@ internal class EbdtFormatOneRenderAssetHandle(
         val lease = lifecycle.acquireLease()
             ?: return failure(FontError.ResourceClosed("Render asset is closed."))
         return try {
-            when (val decoded = bitmapData.decode(GlyphId(request.glyphId), cancellationToken)) {
-                is FontOperationResult.Success -> FontOperationResult.Success(
-                    decoded.value?.let(GlyphRepresentation::Bitmap) ?: GlyphRepresentation.Empty,
-                    decoded.diagnostics,
-                )
+            if (cancellationToken.isCancellationRequested()) return FontOperationResult.Cancelled()
+            val resource = resourceLease?.resource
+                ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+            val glyphId = GlyphId(request.glyphId)
+            val profile = requireNotNull(key.representationProfile as? BitmapProfile) {
+                "EBDT format 1 render asset requires a bitmap asset key."
+            }
+            val representationKey = GlyphRepresentationKey(
+                assetKey = key,
+                glyphId = glyphId,
+                variant = key.variant,
+                profile = GlyphRepresentationProfileKey.bitmap(profile),
+                routeParameters = EBDT_FORMAT_ONE_ROUTE_PARAMETERS,
+            )
+            resource.cachedRepresentation(representationKey)?.let { cached -> return cached }
+            when (val decoded = bitmapData.decode(glyphId, cancellationToken)) {
+                is FontOperationResult.Success -> {
+                    if (cancellationToken.isCancellationRequested()) FontOperationResult.Cancelled()
+                    else FontOperationResult.Success(
+                        decoded.value?.let(GlyphRepresentation::Bitmap) ?: GlyphRepresentation.Empty,
+                        decoded.diagnostics,
+                    ).also { success -> resource.cacheRepresentation(representationKey, success) }
+                }
 
                 is FontOperationResult.Failure -> decoded
                 is FontOperationResult.Cancelled -> decoded

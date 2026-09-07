@@ -53,12 +53,14 @@ données immuables requises par `resolveGlyph(...)`.
 ### Rétention bornée des représentations
 
 `FontMaterializationCachePolicy` peut conserver les résultats complets, immuables et portables
-des contours d’une face capturée dans un cache (mémoire temporaire). La politique est désactivée
+des contours, graphes de peinture et pixels bitmap décodés d’une face capturée dans un cache
+(mémoire temporaire). La politique est désactivée
 par défaut ; elle peut être passée à `Kalligraphie.embedded(...)` ou à
 `MacosSystemFontCatalogOptions`. Son budget en octets est uniquement une politique de coût : il
 ne modifie ni la sélection de route, ni une clé de représentation, un certificat, un diagnostic
 ou le résultat d’un glyphe. Les entrées sont limitées à une face et à une génération de provider
-(fournisseur), pondérées par les données de contour normalisées retenues, puis évincées selon
+(fournisseur), pondérées par les données de contour et de peinture normalisées ainsi que les
+pixels bitmap décodés retenus, puis évincées selon
 LRU (least recently used, moins récemment utilisé). L’annulation et les erreurs opérationnelles
 ne sont jamais conservées ; un résultat plus grand que le budget est retourné normalement sans
 être conservé. Aucune entrée du cache ne retient de gestionnaire, de ressource de rendu, de

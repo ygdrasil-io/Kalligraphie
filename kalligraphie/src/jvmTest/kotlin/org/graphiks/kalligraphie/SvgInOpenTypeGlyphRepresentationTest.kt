@@ -6,6 +6,7 @@ import org.graphiks.kalligraphie.api.FontDiagnosticLocation
 import org.graphiks.kalligraphie.api.FontError
 import org.graphiks.kalligraphie.api.FontGlyphRequest
 import org.graphiks.kalligraphie.api.FontInstanceDescriptor
+import org.graphiks.kalligraphie.api.FontMaterializationCachePolicy
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontRenderVariantKey
 import org.graphiks.kalligraphie.api.FontSourceProvenance
@@ -31,6 +32,7 @@ class SvgInOpenTypeGlyphRepresentationTest {
             Kalligraphie.embedded(
                 fixtureBytes(),
                 FontSourceProvenance("TwitterColorEmoji-SVGinOT-15.1.0-glyph5.ttf"),
+                FontMaterializationCachePolicy(maxEvictableBytesPerFace = 10_000),
             ),
         )
         val requirements = FontAccessRequirementsSnapshot.renderable(listOf(paintProfile()))
@@ -41,8 +43,25 @@ class SvgInOpenTypeGlyphRepresentationTest {
             val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
             try {
                 val paint = assertIs<GlyphRepresentation.Paint>(success(asset.resolveGlyph(FontGlyphRequest(GlyphId(1))))).paint
+                val warmPaint = assertIs<GlyphRepresentation.Paint>(success(asset.resolveGlyph(FontGlyphRequest(GlyphId(1))))).paint
+                repeat(5) { index ->
+                    val pressureRequirements = FontAccessRequirementsSnapshot.renderable(
+                        listOf(paintProfile(maxSourceBytes = 16 * 1024 + index + 1)),
+                    )
+                    val pressureAsset = success(
+                        instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, pressureRequirements),
+                    )
+                    try {
+                        assertIs<GlyphRepresentation.Paint>(success(pressureAsset.resolveGlyph(FontGlyphRequest(GlyphId(1)))))
+                    } finally {
+                        pressureAsset.close()
+                    }
+                }
+                val afterPressurePaint = assertIs<GlyphRepresentation.Paint>(success(asset.resolveGlyph(FontGlyphRequest(GlyphId(1))))).paint
 
                 assertTrue(catalog.faces.single().capabilities.paintGraph)
+                assertEquals(paint, warmPaint)
+                assertEquals(paint, afterPressurePaint)
                 assertEquals(1, paint.schemaVersion)
                 assertEquals(2, paint.rootNode)
                 assertEquals(3, paint.nodes.size)

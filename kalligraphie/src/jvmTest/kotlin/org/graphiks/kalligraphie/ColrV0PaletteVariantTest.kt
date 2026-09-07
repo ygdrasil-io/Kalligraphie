@@ -3,6 +3,7 @@ package org.graphiks.kalligraphie
 import org.graphiks.kalligraphie.api.FontAccessRequirementsSnapshot
 import org.graphiks.kalligraphie.api.FontGlyphRequest
 import org.graphiks.kalligraphie.api.FontInstanceDescriptor
+import org.graphiks.kalligraphie.api.FontMaterializationCachePolicy
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontRenderVariantSnapshot
 import org.graphiks.kalligraphie.api.FontSourceProvenance
@@ -47,6 +48,7 @@ class ColrV0PaletteVariantTest {
             val paletteOne = success(
                 instance.acquireRenderAsset(resolver, FontRenderVariantSnapshot(cpalPaletteIndex = 1), requirements),
             )
+            val paletteOneInitial = paint(paletteOne, glyph)
             val paletteOneKey = paletteOne.key
             paletteOne.close()
 
@@ -66,6 +68,7 @@ class ColrV0PaletteVariantTest {
                 listOf(GlyphColor(255, 255, 255), GlyphColor(232, 232, 231)),
                 solidOutlines(paletteOnePaint).map { it.color },
             )
+            assertEquals(paletteOneInitial, paletteOnePaint)
             assertNotEquals(solidOutlines(paletteZeroPaint).map { it.color }, solidOutlines(paletteOnePaint).map { it.color })
             assertEquals(GlyphId(43), success(instance.resolveGlyph('A'.code)).glyphId)
             assertEquals(metrics, success(instance.metrics(glyph)))
@@ -106,7 +109,11 @@ class ColrV0PaletteVariantTest {
     }
 
     private fun catalog(bytes: ByteArray) = success(
-        Kalligraphie.embedded(bytes, FontSourceProvenance("Bungee Color Regular")),
+        Kalligraphie.embedded(
+            bytes,
+            FontSourceProvenance("Bungee Color Regular"),
+            FontMaterializationCachePolicy(maxEvictableBytesPerFace = 1_000_000),
+        ),
     )
 
     private fun paintProfile(): PaintGraphProfile = PaintGraphProfile(

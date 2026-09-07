@@ -9,6 +9,7 @@ import org.graphiks.kalligraphie.api.FontAccessRequirementsSnapshot
 import org.graphiks.kalligraphie.api.FontError
 import org.graphiks.kalligraphie.api.FontGlyphRequest
 import org.graphiks.kalligraphie.api.FontInstanceDescriptor
+import org.graphiks.kalligraphie.api.FontMaterializationCachePolicy
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontRenderVariantKey
 import org.graphiks.kalligraphie.api.FontSourceProvenance
@@ -49,7 +50,13 @@ class EbdtFormatOneGlyphRepresentationTest {
 
     @Test
     fun decodesSkiaEbdtFormatOneGrinningFaceAtTheExplicitSixteenPixelStrike() {
-        val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
+        val catalog = success(
+            Kalligraphie.embedded(
+                fixtureBytes(),
+                FontSourceProvenance("Skia EBDT format 1"),
+                FontMaterializationCachePolicy(maxEvictableBytesPerFace = 10_000),
+            ),
+        )
         val requirements = FontAccessRequirementsSnapshot.renderable(listOf(bitmapProfile()))
         val resolver = success(catalog.openAssetResolver())
         val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
@@ -61,8 +68,25 @@ class EbdtFormatOneGlyphRepresentationTest {
             val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
             try {
                 val bitmap = assertIs<GlyphRepresentation.Bitmap>(success(asset.resolveGlyph(FontGlyphRequest(glyph)))).bitmap
+                val warmBitmap = assertIs<GlyphRepresentation.Bitmap>(success(asset.resolveGlyph(FontGlyphRequest(glyph)))).bitmap
+                repeat(5) { index ->
+                    val pressureRequirements = FontAccessRequirementsSnapshot.renderable(
+                        listOf(bitmapProfile(maxBitmapTableBytes = 16_384 + index + 1)),
+                    )
+                    val pressureAsset = success(
+                        instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, pressureRequirements),
+                    )
+                    try {
+                        assertIs<GlyphRepresentation.Bitmap>(success(pressureAsset.resolveGlyph(FontGlyphRequest(glyph))))
+                    } finally {
+                        pressureAsset.close()
+                    }
+                }
+                val afterPressureBitmap = assertIs<GlyphRepresentation.Bitmap>(success(asset.resolveGlyph(FontGlyphRequest(glyph)))).bitmap
 
                 assertBitmap(bitmap)
+                assertEquals(bitmap, warmBitmap)
+                assertEquals(bitmap, afterPressureBitmap)
             } finally {
                 asset.close()
             }

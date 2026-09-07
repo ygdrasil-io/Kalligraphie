@@ -47,12 +47,12 @@ resolver or render asset is idempotent. New acquisitions after closure return
 
 ### Bounded representation retention
 
-`FontMaterializationCachePolicy` optionally retains complete immutable portable outline results
-for one captured face. The policy is disabled by default and can be passed to
+`FontMaterializationCachePolicy` optionally retains complete immutable portable outline,
+paint-graph, and decoded-bitmap results for one captured face. The policy is disabled by default and can be passed to
 `Kalligraphie.embedded(...)` or `MacosSystemFontCatalogOptions`. Its byte budget is a cost policy
 only: it neither changes route selection nor any representation key, certificate, diagnostic, or
 glyph result. Entries are scoped to one provider generation and face, weighted by retained
-normalized outline data, and evicted least-recently-used first. Cancellation and operational
+normalized contour and paint data plus decoded bitmap pixels, and evicted least-recently-used first. Cancellation and operational
 errors are never retained; a result larger than the budget is returned normally without being
 retained. No cache entry holds a resolver, render asset, catalog, or native resource.
 
