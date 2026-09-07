@@ -2,11 +2,37 @@ package org.graphiks.kalligraphie.api
 
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 
 class GlyphRepresentationContractsTest {
+    @Test
+    fun paintProfilesRejectUndeclaredCompositionBeforeCertification() {
+        val outline = GlyphOutlineIR(
+            glyphId = 0,
+            unitsPerEm = 1_000,
+            bounds = DesignBounds.empty,
+            commands = emptyList(),
+        )
+        val paint = GlyphPaintIR(
+            schemaVersion = 1,
+            rootNode = 1,
+            nodes = listOf(
+                GlyphPaintNode.SolidOutline(outline, GlyphColor(0, 0, 0)),
+                GlyphPaintNode.Group(children = listOf(0)),
+            ),
+        )
+        val profile = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE, GlyphPaintNodeKind.GROUP),
+            acceptedCompositionModes = emptyList(),
+            limits = PaintGraphLimits(maxNodes = 4, maxReferences = 4, maxDepth = 4),
+        )
+
+        assertEquals(false, profile.accepts(paint))
+    }
+
     @Test
     fun renderVariantsKeepPaletteAndForegroundSelectionInTheirIdentity() {
         val paletteZero = FontRenderVariantSnapshot(
