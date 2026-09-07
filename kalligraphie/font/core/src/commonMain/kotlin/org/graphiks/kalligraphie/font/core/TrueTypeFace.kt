@@ -35,6 +35,7 @@ import org.graphiks.kalligraphie.api.GlyphResolution
 import org.graphiks.kalligraphie.api.sortedDiagnostics
 import org.graphiks.kalligraphie.api.toDiagnostic
 import org.graphiks.kalligraphie.font.glyph.OutlineMaterializer
+import org.graphiks.kalligraphie.font.scaler.PreparedTrueTypeFont
 import org.graphiks.kalligraphie.font.sfnt.ColrCpalReader
 import org.graphiks.kalligraphie.font.sfnt.ColrCpalV0Data
 import org.graphiks.kalligraphie.font.sfnt.ColrCpalV0Limits
@@ -47,6 +48,10 @@ import org.graphiks.kalligraphie.font.sfnt.SvgOpenTypeData
 import org.graphiks.kalligraphie.font.sfnt.SvgOpenTypeReader
 import org.graphiks.kalligraphie.font.sfnt.slice
 
+private const val GLYF_OUTLINE_ROUTE_PARAMETERS: String = "glyf-outline-v1"
+private const val COLR_CPAL_V0_ROUTE_PARAMETERS: String = "colr-v0;cpal-v0"
+private const val SVG_OPEN_TYPE_V0_ROUTE_PARAMETERS: String = "svg-opentype-v0"
+private const val SVG_GLYF_OUTLINE_FALLBACK_ROUTE_PARAMETERS: String = "svg-opentype-v0;glyf-outline-fallback-v1"
 private const val EBDT_FORMAT_ONE_ROUTE_PARAMETERS: String = "eblc-v2;ebdt-v2;index-format-1;image-format-1"
 
 internal class TrueTypeFace(
@@ -452,6 +457,7 @@ internal class TrueTypeRenderAssetHandle(
                 glyphId = glyphId,
                 variant = key.variant,
                 profile = GlyphRepresentationProfileKey.outline(profile),
+                routeParameters = GLYF_OUTLINE_ROUTE_PARAMETERS,
             )
             resource.cachedRepresentation(representationKey)?.let { cached -> return cached }
             val outline = when (val result = preparedFont.readGlyphOutline(glyphId, profile, cancellationToken)) {
@@ -487,7 +493,7 @@ internal class TrueTypeRenderAssetHandle(
     }
 }
 
-/** Asset handle for the normalized, profile-certified SVG-in-OpenType paint route. */
+/** Asset handle for the normalized SVG-in-OpenType route and its profile-certified `glyf` fallback. */
 internal class SvgOpenTypeRenderAssetHandle(
     override val faceId: FontFaceId,
     private var resourceLease: PreparedFontResourceLease?,
@@ -530,26 +536,40 @@ internal class SvgOpenTypeRenderAssetHandle(
             ?: return failure(FontError.ResourceClosed("Render asset is closed."))
         return try {
             if (cancellationToken.isCancellationRequested()) return FontOperationResult.Cancelled()
+            val preparedFont = resourceLease?.preparedFont
+                ?: return failure(FontError.ResourceClosed("Render asset is closed."))
             val resource = resourceLease?.resource
                 ?: return failure(FontError.ResourceClosed("Render asset is closed."))
             if (request.glyphId !in 0 until glyphCount) return failure(FontError.GlyphOutOfRange(request.glyphId))
             val glyphId = GlyphId(request.glyphId)
+            val svgPaint = svgData.glyphPaint(glyphId)
             val representationKey = GlyphRepresentationKey(
                 assetKey = key,
                 glyphId = glyphId,
                 variant = key.variant,
                 profile = GlyphRepresentationProfileKey.paintGraph(profile),
+                routeParameters = if (svgPaint == null) {
+                    SVG_GLYF_OUTLINE_FALLBACK_ROUTE_PARAMETERS
+                } else {
+                    SVG_OPEN_TYPE_V0_ROUTE_PARAMETERS
+                },
             )
             resource.cachedRepresentation(representationKey)?.let { cached -> return cached }
-            val representation = when (val paint = svgData.glyphPaint(glyphId)) {
-                null,
-                SvgGlyphPaint.Empty,
-                -> GlyphRepresentation.Empty
-
-                is SvgGlyphPaint.Paint -> GlyphRepresentation.Paint(paint.paint)
+            val representation = when (svgPaint) {
+                null -> materializeGlyfOutlineFallback(preparedFont, glyphId, cancellationToken)
+                SvgGlyphPaint.Empty -> FontOperationResult.Success(GlyphRepresentation.Empty)
+                is SvgGlyphPaint.Paint -> FontOperationResult.Success(GlyphRepresentation.Paint(svgPaint.paint))
             }
-            if (cancellationToken.isCancellationRequested()) FontOperationResult.Cancelled()
-            else FontOperationResult.Success(representation).also { success -> resource.cacheRepresentation(representationKey, success) }
+            when (representation) {
+                is FontOperationResult.Success -> if (cancellationToken.isCancellationRequested()) {
+                    FontOperationResult.Cancelled()
+                } else {
+                    representation.also { success -> resource.cacheRepresentation(representationKey, success) }
+                }
+
+                is FontOperationResult.Failure -> representation
+                is FontOperationResult.Cancelled -> representation
+            }
         } finally {
             lease.release()
         }
@@ -563,6 +583,40 @@ internal class SvgOpenTypeRenderAssetHandle(
     private fun releaseResourceLease() {
         resourceLease?.release()
         resourceLease = null
+    }
+
+    private fun materializeGlyfOutlineFallback(
+        preparedFont: PreparedTrueTypeFont,
+        glyphId: GlyphId,
+        cancellationToken: CancellationToken,
+    ): FontOperationResult<GlyphRepresentation> {
+        val outline = when (val result = preparedFont.readGlyphOutline(glyphId, profile.outlineProfile, cancellationToken)) {
+            is FontOperationResult.Success -> result.value
+            is FontOperationResult.Failure -> return result
+            is FontOperationResult.Cancelled -> return result
+        }
+        val materialized = when (val result = OutlineMaterializer.materialize(outline, profile.outlineProfile, cancellationToken)) {
+            is FontOperationResult.Success -> result.value
+            is FontOperationResult.Failure -> return result
+            is FontOperationResult.Cancelled -> return result
+        }
+        val outlineRepresentation = materialized as? GlyphRepresentation.Outline
+            ?: return FontOperationResult.Success(GlyphRepresentation.Empty)
+        val paint = GlyphPaintIR(
+            schemaVersion = profile.schemaVersion,
+            rootNode = 0,
+            nodes = listOf(GlyphPaintNode.SolidOutline(outlineRepresentation.outline, GlyphColor(0, 0, 0))),
+        )
+        return if (profile.accepts(paint)) {
+            FontOperationResult.Success(GlyphRepresentation.Paint(paint))
+        } else {
+            failure(
+                FontError.UnsupportedRepresentationProfile(
+                    "The selected paint profile does not accept the glyf outline fallback for a glyph outside the SVG range.",
+                    FontDiagnosticLocation.Glyph(glyphId.value),
+                ),
+            )
+        }
     }
 }
 
@@ -622,6 +676,7 @@ internal class ColrV0RenderAssetHandle(
                 glyphId = glyphId,
                 variant = key.variant,
                 profile = GlyphRepresentationProfileKey.paintGraph(profile),
+                routeParameters = COLR_CPAL_V0_ROUTE_PARAMETERS,
             )
             resource.cachedRepresentation(representationKey)?.let { cached -> return cached }
             val layers = colorData.layersFor(glyphId)
