@@ -50,6 +50,7 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Font Management: font-management.md
+  - Glyph Materialization Measurement: glyph-materialization-measurement.md
   - Editable Paragraphs: editable-paragraphs.md
   - Incremental Layout Measurement: incremental-layout-measurement.md
   - Advanced Typography: advanced-typography.md
