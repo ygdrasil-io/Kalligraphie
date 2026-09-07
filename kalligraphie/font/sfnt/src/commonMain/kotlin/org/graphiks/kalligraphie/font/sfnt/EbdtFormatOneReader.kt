@@ -2,6 +2,7 @@ package org.graphiks.kalligraphie.font.sfnt
 
 import org.graphiks.kalligraphie.api.BitmapGlyphIR
 import org.graphiks.kalligraphie.api.BitmapGlyphMetrics
+import org.graphiks.kalligraphie.api.BitmapLimits
 import org.graphiks.kalligraphie.api.BitmapPixelFormat
 import org.graphiks.kalligraphie.api.BitmapProfile
 import org.graphiks.kalligraphie.api.BitmapStrike
@@ -85,6 +86,56 @@ public object EbdtFormatOneReader {
             readUInt32(ebdtTable, 0) == EBDT_VERSION_2
 
     /**
+     * Reports whether every declared strike can use this reader's exact format-1 route.
+     *
+     * The predicate validates headers, strike envelopes, subtable boundaries, glyph ranges,
+     * image formats, offsets, and image records with conservative implementation limits. It
+     * publishes no data and is intended only for a face capability prefilter. Call [read] again
+     * with the consumer's exact [BitmapProfile] before issuing a certificate.
+     */
+    public fun hasStructurallyValidFormatOneTables(
+        eblcTable: ByteArray,
+        ebdtTable: ByteArray,
+        glyphCount: Int,
+    ): Boolean {
+        if (!hasSupportedVersionTwoHeaders(eblcTable, ebdtTable) || glyphCount <= 0) return false
+        if (eblcTable.size > MAX_CAPABILITY_TABLE_BYTES || ebdtTable.size > MAX_CAPABILITY_TABLE_BYTES) return false
+        val strikeCount = readUInt32(eblcTable, 4)?.toLong() ?: return false
+        if (strikeCount !in 1L..MAX_CAPABILITY_STRIKES.toLong()) return false
+        if (checkedRangeEnd(EBLC_HEADER_LENGTH.toLong(), strikeCount * BITMAP_SIZE_TABLE_LENGTH, eblcTable.size) == null) return false
+        repeat(strikeCount.toInt()) { index ->
+            val size = when (val parsed = readBitmapSizeTable(eblcTable, EBLC_HEADER_LENGTH + index * BITMAP_SIZE_TABLE_LENGTH)) {
+                is FontOperationResult.Success -> parsed.value
+                else -> return false
+            }
+            if (size.bitDepth != 1 || size.startGlyphId !in 0 until glyphCount || size.endGlyphId !in size.startGlyphId until glyphCount) {
+                return false
+            }
+            val profile = BitmapProfile(
+                strike = size.strike,
+                acceptedPixelFormats = listOf(BitmapPixelFormat.ALPHA_8),
+                acceptedColorSpaces = listOf(GlyphColorSpace.SRGB),
+                limits = BitmapLimits(
+                    maxStrikes = MAX_CAPABILITY_STRIKES,
+                    maxIndexSubtables = MAX_CAPABILITY_INDEX_SUBTABLES,
+                    maxRecordCount = MAX_CAPABILITY_RECORDS,
+                    maxIndexTableBytes = MAX_CAPABILITY_TABLE_BYTES,
+                    maxBitmapTableBytes = MAX_CAPABILITY_TABLE_BYTES,
+                    maxWidth = MAX_CAPABILITY_DIMENSION,
+                    maxHeight = MAX_CAPABILITY_DIMENSION,
+                    maxPixels = MAX_CAPABILITY_PIXELS,
+                    maxCompressedBytes = MAX_CAPABILITY_TABLE_BYTES,
+                    maxTotalCompressedBytes = MAX_CAPABILITY_TABLE_BYTES,
+                    maxDecodedBytes = MAX_CAPABILITY_PIXELS,
+                    maxTotalDecodedBytes = MAX_CAPABILITY_DECODED_BYTES,
+                ),
+            )
+            if (read(eblcTable, ebdtTable, glyphCount, profile) !is FontOperationResult.Success) return false
+        }
+        return true
+    }
+
+    /**
      * Parses the exact strike requested by [profile].
      *
      * The operation validates every index subtable and every image record in the selected strike
@@ -152,8 +203,14 @@ public object EbdtFormatOneReader {
         if (size.numberOfIndexSubTables > profile.limits.maxIndexSubtables) {
             return limit("EBLC index-subtable limit exceeded.", "EBLC")
         }
-        checkedRangeEnd(size.indexSubTableArrayOffset, size.numberOfIndexSubTables.toLong() * INDEX_SUBTABLE_ARRAY_ENTRY_LENGTH, eblc.size)
-            ?: return invalid("font.eblc.truncated", "EBLC index-subtable array is truncated.", "EBLC")
+        val indexTablesEnd = checkedRangeEnd(size.indexSubTableArrayOffset, size.indexTablesSize, eblc.size)
+            ?: return invalid("font.eblc.invalid-index-tables-range", "EBLC index tables exceed their declared strike region.", "EBLC")
+        checkedRangeEnd(
+            size.indexSubTableArrayOffset,
+            size.numberOfIndexSubTables.toLong() * INDEX_SUBTABLE_ARRAY_ENTRY_LENGTH,
+            indexTablesEnd,
+        )
+            ?: return invalid("font.eblc.invalid-index-tables-range", "EBLC index-subtable array exceeds its declared strike region.", "EBLC")
         val records = LinkedHashMap<GlyphId, EbdtFormatOneRecord>()
         var recordCount = 0
         var totalCompressedBytes = 0L
@@ -166,12 +223,12 @@ public object EbdtFormatOneReader {
                 ?: return invalid("font.eblc.truncated", "EBLC subtable glyph range is truncated.", "EBLC")
             val additionalOffset = readUInt32(eblc, entryOffset + 4)?.toLong()
                 ?: return invalid("font.eblc.truncated", "EBLC subtable offset is truncated.", "EBLC")
-            if (firstGlyph !in 0 until glyphCount || lastGlyph !in firstGlyph until glyphCount) {
-                return invalid("font.eblc.invalid-glyph-range", "EBLC subtable range is outside the face.", "EBLC")
+            if (firstGlyph !in size.startGlyphId..size.endGlyphId || lastGlyph !in firstGlyph..size.endGlyphId) {
+                return invalid("font.eblc.invalid-strike-glyph-range", "EBLC subtable range is outside its selected strike.", "EBLC")
             }
             val subtableOffset = size.indexSubTableArrayOffset + additionalOffset
-            checkedRangeEnd(subtableOffset, INDEX_SUBTABLE_HEADER_LENGTH, eblc.size)
-                ?: return invalid("font.eblc.truncated", "EBLC index subtable is truncated.", "EBLC")
+            checkedRangeEnd(subtableOffset, INDEX_SUBTABLE_HEADER_LENGTH, indexTablesEnd)
+                ?: return invalid("font.eblc.invalid-index-tables-range", "EBLC index subtable exceeds its declared strike region.", "EBLC")
             val indexFormat = readUInt16(eblc, subtableOffset.toInt())?.toInt()
                 ?: return invalid("font.eblc.truncated", "EBLC index subtable is truncated.", "EBLC")
             val imageFormat = readUInt16(eblc, subtableOffset.toInt() + 2)?.toInt()
@@ -185,8 +242,8 @@ public object EbdtFormatOneReader {
             }
             recordCount += glyphsInSubtable
             val offsetArrayStart = subtableOffset + INDEX_SUBTABLE_HEADER_LENGTH
-            checkedRangeEnd(offsetArrayStart, (glyphsInSubtable + 1).toLong() * 4L, eblc.size)
-                ?: return invalid("font.eblc.truncated", "EBLC image-offset array is truncated.", "EBLC")
+            checkedRangeEnd(offsetArrayStart, (glyphsInSubtable + 1).toLong() * 4L, indexTablesEnd)
+                ?: return invalid("font.eblc.invalid-index-tables-range", "EBLC image-offset array exceeds its declared strike region.", "EBLC")
             var previousOffset = -1L
             val offsets = LongArray(glyphsInSubtable + 1)
             repeat(glyphsInSubtable + 1) { offsetIndex ->
@@ -276,6 +333,8 @@ public object EbdtFormatOneReader {
         }
         val indexSubTableArrayOffset = readUInt32(bytes, offset)?.toLong()
             ?: return invalid("font.eblc.truncated", "EBLC bitmap size table is truncated.", "EBLC")
+        val indexTablesSize = readUInt32(bytes, offset + 4)?.toLong()
+            ?: return invalid("font.eblc.truncated", "EBLC bitmap size table is truncated.", "EBLC")
         val numberOfIndexSubTables = readUInt32(bytes, offset + 8)?.toLong()
             ?: return invalid("font.eblc.truncated", "EBLC bitmap size table is truncated.", "EBLC")
         if (numberOfIndexSubTables > Int.MAX_VALUE) {
@@ -292,6 +351,7 @@ public object EbdtFormatOneReader {
         }
         return FontOperationResult.Success(BitmapSizeTable(
             indexSubTableArrayOffset = indexSubTableArrayOffset,
+            indexTablesSize = indexTablesSize,
             numberOfIndexSubTables = numberOfIndexSubTables.toInt(),
             startGlyphId = startGlyphId,
             endGlyphId = endGlyphId,
@@ -315,6 +375,7 @@ private fun exceedsCumulativeLimit(total: Long, increment: Long, maximum: Int): 
 
 private data class BitmapSizeTable(
     val indexSubTableArrayOffset: Long,
+    val indexTablesSize: Long,
     val numberOfIndexSubTables: Int,
     val startGlyphId: Int,
     val endGlyphId: Int,
@@ -351,3 +412,10 @@ private const val INDEX_SUBTABLE_HEADER_LENGTH = 8L
 private const val SMALL_GLYPH_METRICS_LENGTH = 5
 private const val EBLC_VERSION_2: UInt = 0x00020000u
 private const val EBDT_VERSION_2: UInt = 0x00020000u
+private const val MAX_CAPABILITY_TABLE_BYTES = 16 * 1024 * 1024
+private const val MAX_CAPABILITY_STRIKES = 64
+private const val MAX_CAPABILITY_INDEX_SUBTABLES = 4_096
+private const val MAX_CAPABILITY_RECORDS = 65_536
+private const val MAX_CAPABILITY_DIMENSION = 255
+private const val MAX_CAPABILITY_PIXELS = MAX_CAPABILITY_DIMENSION * MAX_CAPABILITY_DIMENSION
+private const val MAX_CAPABILITY_DECODED_BYTES = 64 * 1024 * 1024

@@ -35,6 +35,19 @@ class EbdtFormatOneGlyphRepresentationTest {
     }
 
     @Test
+    fun doesNotAdvertiseBitmapCapabilityWhenAnEblcSubtableUsesAnUnsupportedFormat() {
+        val corrupted = fixtureBytes().also { bytes ->
+            val indexFormatOffset = firstEblcIndexSubtableOffset(bytes)
+            bytes[indexFormatOffset] = 0
+            bytes[indexFormatOffset + 1] = 2
+        }
+
+        val catalog = success(Kalligraphie.embedded(corrupted, FontSourceProvenance("Unsupported EBLC index format")))
+
+        assertFalse(catalog.faces.single().capabilities.bitmap)
+    }
+
+    @Test
     fun decodesSkiaEbdtFormatOneGrinningFaceAtTheExplicitSixteenPixelStrike() {
         val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
         val requirements = FontAccessRequirementsSnapshot.renderable(listOf(bitmapProfile()))
@@ -208,11 +221,18 @@ class EbdtFormatOneGlyphRepresentationTest {
         error("Missing $tag table in EBDT fixture.")
     }
 
+    private fun firstEblcIndexSubtableOffset(font: ByteArray): Int {
+        val eblcOffset = tableOffset(font, "EBLC")
+        val indexSubtableArrayOffset = readUInt32(font, eblcOffset + 8)
+        val additionalOffset = readUInt32(font, eblcOffset + indexSubtableArrayOffset + 4)
+        return eblcOffset + indexSubtableArrayOffset + additionalOffset
+    }
+
     private fun readUInt16(bytes: ByteArray, offset: Int): Int =
         ((bytes[offset].toInt() and 0xFF) shl 8) or (bytes[offset + 1].toInt() and 0xFF)
 
     private fun readUInt32(bytes: ByteArray, offset: Int): Int =
-        (bytes[offset].toInt() and 0xFF shl 24) or
+        ((bytes[offset].toInt() and 0xFF) shl 24) or
             ((bytes[offset + 1].toInt() and 0xFF) shl 16) or
             ((bytes[offset + 2].toInt() and 0xFF) shl 8) or
             (bytes[offset + 3].toInt() and 0xFF)

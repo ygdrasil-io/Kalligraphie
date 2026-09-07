@@ -42,6 +42,37 @@ class EbdtFormatOneReaderTest {
     }
 
     @Test
+    fun rejectsASubtableWhoseGlyphRangeEscapesTheSelectedStrike() {
+        val tables = formatOneTables(
+            recordCount = 1,
+            strikeEndGlyph = 0,
+            subtableFirstGlyph = 1,
+            subtableLastGlyph = 1,
+        )
+
+        assertEquals(
+            "font.eblc.invalid-strike-glyph-range",
+            assertIs<FontError.FontDataFailure>(
+                error(EbdtFormatOneReader.read(tables.first, tables.second, glyphCount = 2, profile = profile())),
+            ).code,
+        )
+    }
+
+    @Test
+    fun rejectsASubtableOutsideTheDeclaredIndexTablesRegion() {
+        val tables = formatOneTables().also { (eblc, _) ->
+            eblc.writeUInt32(12, 8u)
+        }
+
+        assertEquals(
+            "font.eblc.invalid-index-tables-range",
+            assertIs<FontError.FontDataFailure>(
+                error(EbdtFormatOneReader.read(tables.first, tables.second, glyphCount = 1, profile = profile())),
+            ).code,
+        )
+    }
+
+    @Test
     fun reportsTruncatedEbdtHeaderAsInvalidFontData() {
         val result = EbdtFormatOneReader.read(
             eblcTable = eblcHeader(strikeCount = 0),
@@ -109,20 +140,24 @@ class EbdtFormatOneReaderTest {
         indexFormat: Int = 1,
         imageFormat: Int = 1,
         recordCount: Int = 1,
+        strikeEndGlyph: Int = recordCount - 1,
+        subtableFirstGlyph: Int = 0,
+        subtableLastGlyph: Int = recordCount - 1,
     ): Pair<ByteArray, ByteArray> {
         val recordLength = 6
         val eblc = ByteArray(72 + (recordCount + 1) * 4).also { bytes ->
             bytes.writeUInt32(0, VERSION_TWO)
             bytes.writeUInt32(4, 1u)
             bytes.writeUInt32(8, 56u)
+            bytes.writeUInt32(12, (bytes.size - 56).toUInt())
             bytes.writeUInt32(16, 1u)
             bytes.writeUInt16(48, 0)
-            bytes.writeUInt16(50, recordCount - 1)
+            bytes.writeUInt16(50, strikeEndGlyph)
             bytes[52] = 16
             bytes[53] = 16
             bytes[54] = 1
-            bytes.writeUInt16(56, 0)
-            bytes.writeUInt16(58, recordCount - 1)
+            bytes.writeUInt16(56, subtableFirstGlyph)
+            bytes.writeUInt16(58, subtableLastGlyph)
             bytes.writeUInt32(60, 8u)
             bytes.writeUInt16(64, indexFormat)
             bytes.writeUInt16(66, imageFormat)

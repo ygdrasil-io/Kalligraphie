@@ -76,7 +76,7 @@ public class EmbeddedFontCatalog(
             supportsColrCpalV0(resources.getValue(id), parsedFonts.getValue(id))
         }.toSet()
         bitmapRouteSupportedFaces = ids.filter { id ->
-            supportsEbdtFormatOneVersionTwoHeaders(resources.getValue(id), parsedFonts.getValue(id))
+            supportsEbdtFormatOneRoute(resources.getValue(id), parsedFonts.getValue(id))
         }.toSet()
         resolvedFaces = ids.associateWith { id ->
             TrueTypeFace(
@@ -189,7 +189,7 @@ private fun supportsColrCpalV0(
     )
 }
 
-private fun supportsEbdtFormatOneVersionTwoHeaders(
+private fun supportsEbdtFormatOneRoute(
     resource: PreparedFontResource,
     parsedFont: ParsedTrueTypeFont,
 ): Boolean {
@@ -198,7 +198,7 @@ private fun supportsEbdtFormatOneVersionTwoHeaders(
     val sourceBytes = resource.preparedFont.copySourceBytes()
     val eblc = slice(sourceBytes, eblcRecord) ?: return false
     val ebdt = slice(sourceBytes, ebdtRecord) ?: return false
-    return EbdtFormatOneReader.hasSupportedVersionTwoHeaders(eblc, ebdt)
+    return EbdtFormatOneReader.hasStructurallyValidFormatOneTables(eblc, ebdt, parsedFont.metadata.glyphCount)
 }
 
 /**
@@ -260,7 +260,7 @@ internal class EmbeddedFontAssetResolver(
             generation = generation,
         parsedFont = parsedFont,
         paintGraphSupported = supportsColrCpalV0(resource, parsedFont),
-        bitmapRouteSupported = supportsEbdtFormatOneVersionTwoHeaders(resource, parsedFont),
+        bitmapRouteSupported = supportsEbdtFormatOneRoute(resource, parsedFont),
         ).acquireRenderAsset(
             resolver = this,
             renderVariant = variant,
@@ -293,7 +293,7 @@ internal class EmbeddedFontAssetResolver(
                 key.variant == FontRenderVariantKey.default &&
                 profile.schemaVersion == 1 &&
                     resources[instance.face]?.let { resource ->
-                        supportsEbdtFormatOneVersionTwoHeaders(resource, parsedFont)
+                        supportsEbdtFormatOneRoute(resource, parsedFont)
                     } == true
             else -> false
         }
