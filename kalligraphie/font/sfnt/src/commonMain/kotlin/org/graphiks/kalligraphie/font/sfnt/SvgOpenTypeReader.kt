@@ -55,7 +55,8 @@ public class SvgOpenTypeData internal constructor(
  * Only SVG table version 0 with raw UTF-8 documents is accepted. Supported documents contain
  * `svg`, `g`, and self-closing `path` elements; `g` may contain `translate` and `scale`
  * transforms; paths may use `M`, `L`, `H`, `V`, `C`, `S`, and `Z` commands (and their relative forms)
- * with a solid `#RRGGBB` fill. All transforms are applied to the portable path coordinates.
+ * with a solid `#RRGGBB` fill or `fill="none"` for an explicitly inkless path. All transforms are
+ * applied to the portable path coordinates.
  * Scripts, network or external references, entities, animation, compressed documents, XML
  * declarations, gradients, clips, strokes, opacity, masks, and every unlisted element or
  * attribute are rejected before any [SvgOpenTypeData] is returned.
@@ -89,12 +90,18 @@ public object SvgOpenTypeReader {
         }
         val documentListOffset = readUInt32(svgTable, 2)?.toLong()
             ?: return invalid("font.svg.truncated", "SVG document-list offset is truncated.")
-        if (documentListOffset > Int.MAX_VALUE || checkedRangeEnd(documentListOffset, 2L, svgTable.size) == null) {
-            return invalid("font.svg.invalid-document-list-offset", "SVG document-list offset exceeds the table.")
+        if (documentListOffset < SVG_HEADER_LENGTH || documentListOffset > Int.MAX_VALUE ||
+            checkedRangeEnd(documentListOffset, 2L, svgTable.size) == null
+        ) {
+            return invalid("font.svg.invalid-document-list-offset", "SVG document-list offset is outside the table body.")
+        }
+        if (readUInt32(svgTable, 6) != 0u) {
+            return invalid("font.svg.invalid-reserved", "SVG table reserved field must be zero.")
         }
         val documentListStart = documentListOffset.toInt()
         val documentCount = readUInt16(svgTable, documentListStart)?.toInt()
             ?: return invalid("font.svg.truncated", "SVG document-list count is truncated.")
+        if (documentCount == 0) return invalid("font.svg.empty-document-list", "SVG document-list must not be empty.")
         if (documentCount > profile.limits.maxSvgDocuments) return limit("SVG document-record limit exceeded.")
         val recordsStart = documentListStart + DOCUMENT_LIST_HEADER_LENGTH
         if (checkedRangeEnd(recordsStart, documentCount * DOCUMENT_RECORD_LENGTH, svgTable.size) == null) {
@@ -104,6 +111,7 @@ public object SvgOpenTypeReader {
         val records = ArrayList<SvgOpenTypeDocumentRecord>(documentCount)
         var previousLastGlyphId = -1
         var cumulativeDocumentBytes = 0L
+        val transformBudget = SvgTransformBudget(profile.limits.maxSvgTransformOperations)
         repeat(documentCount) { recordIndex ->
             val offset = recordsStart + recordIndex * DOCUMENT_RECORD_LENGTH
             val firstGlyphId = readUInt16(svgTable, offset)?.toInt()
@@ -134,7 +142,7 @@ public object SvgOpenTypeReader {
             } catch (_: IllegalArgumentException) {
                 return invalid("font.svg.invalid-utf8", "SVG document is not valid UTF-8.")
             }
-            val paint = when (val parsed = SvgDocumentParser(profile).parse(xml)) {
+            val paint = when (val parsed = SvgDocumentParser(profile, transformBudget).parse(xml)) {
                 is FontOperationResult.Success -> parsed.value
                 is FontOperationResult.Failure -> return parsed
                 is FontOperationResult.Cancelled -> return parsed
@@ -163,9 +171,9 @@ internal data class SvgOpenTypeDocumentRecord(
 
 private class SvgDocumentParser(
     private val profile: PaintGraphProfile,
+    private val transformBudget: SvgTransformBudget,
 ) {
     private val paths = mutableListOf<GlyphPaintNode.Path>()
-    private var transformOperations = 0
 
     fun parse(xml: String): FontOperationResult<SvgGlyphPaint> {
         if (xml.contains("<!") || xml.contains("<?") || xml.contains('&')) {
@@ -215,8 +223,11 @@ private class SvgDocumentParser(
                     }
                     if (stack.size + 1 > profile.limits.maxDepth) return limit("SVG nesting-depth limit exceeded.")
                     val local = if ("transform" in attributes) {
-                        parseTransform(attributes.getValue("transform"))
-                            ?: return invalid("font.svg.invalid-transform", "SVG group transform is malformed or exceeds its limit.")
+                        when (val parsed = parseTransform(attributes.getValue("transform"))) {
+                            is FontOperationResult.Success -> parsed.value
+                            is FontOperationResult.Failure -> return parsed
+                            is FontOperationResult.Cancelled -> return parsed
+                        }
                     } else {
                         AffineTransform.identity
                     }
@@ -263,7 +274,7 @@ private class SvgDocumentParser(
         return FontOperationResult.Success(SvgGlyphPaint.Paint(paint))
     }
 
-    private fun parseTransform(value: String): AffineTransform? {
+    private fun parseTransform(value: String): FontOperationResult<AffineTransform> {
         var cursor = 0
         var transform = AffineTransform.identity
         while (cursor < value.length) {
@@ -273,25 +284,33 @@ private class SvgDocumentParser(
             while (cursor < value.length && value[cursor].isLetter()) cursor += 1
             val name = value.substring(nameStart, cursor)
             cursor = value.skipWhitespace(cursor)
-            if (cursor >= value.length || value[cursor] != '(') return null
+            if (cursor >= value.length || value[cursor] != '(') {
+                return invalid("font.svg.invalid-transform", "SVG group transform is malformed.")
+            }
             val close = value.indexOf(')', cursor + 1)
-            if (close < 0) return null
-            val numbers = SvgNumberCursor(value.substring(cursor + 1, close)).allNumbers() ?: return null
-            transformOperations += 1
-            if (transformOperations > profile.limits.maxSvgTransformOperations) return null
+            if (close < 0) return invalid("font.svg.invalid-transform", "SVG group transform is malformed.")
+            val numbers = SvgNumberCursor(value.substring(cursor + 1, close)).allNumbers()
+                ?: return invalid("font.svg.invalid-transform", "SVG group transform is malformed.")
             val next = when (name) {
-                "translate" -> if (numbers.size in 1..2) AffineTransform.translate(numbers[0], numbers.getOrElse(1) { 0.0 }) else null
-                "scale" -> if (numbers.size in 1..2) AffineTransform.scale(numbers[0], numbers.getOrElse(1) { numbers[0] }) else null
-                else -> null
-            } ?: return null
+                "translate" -> if (numbers.size in 1..2) AffineTransform.translate(numbers[0], numbers.getOrElse(1) { 0.0 }) else {
+                    return invalid("font.svg.invalid-transform", "SVG translate transform has invalid operands.")
+                }
+
+                "scale" -> if (numbers.size in 1..2) AffineTransform.scale(numbers[0], numbers.getOrElse(1) { numbers[0] }) else {
+                    return invalid("font.svg.invalid-transform", "SVG scale transform has invalid operands.")
+                }
+
+                else -> return unsupported("SVG transform $name is not supported.")
+            }
+            if (!transformBudget.tryConsume()) return limit("SVG transform-operation limit exceeded.")
             transform = try {
                 transform.then(next)
             } catch (_: IllegalArgumentException) {
-                return null
+                return invalid("font.svg.invalid-transform", "SVG group transform exceeds the portable coordinate domain.")
             }
             cursor = close + 1
         }
-        return transform
+        return FontOperationResult.Success(transform)
     }
 
     private fun parsePath(data: String, transform: AffineTransform): FontOperationResult<GlyphPaintPath> {
@@ -430,6 +449,18 @@ private class SvgDocumentParser(
 }
 
 private data class SvgElement(val name: String, val transform: AffineTransform)
+
+private class SvgTransformBudget(
+    private val maximum: Int,
+) {
+    private var consumed: Int = 0
+
+    fun tryConsume(): Boolean {
+        if (consumed >= maximum) return false
+        consumed += 1
+        return true
+    }
+}
 
 private data class Point(val x: Double, val y: Double)
 

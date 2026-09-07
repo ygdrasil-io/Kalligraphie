@@ -55,6 +55,57 @@ class SvgOpenTypeReaderTest {
     }
 
     @Test
+    fun rejectsTransformsWhoseTotalAcrossDocumentsExceedsTheProfileLimit() {
+        val document = "<svg xmlns=\"http://www.w3.org/2000/svg\"><g transform=\"scale(1)\"><path fill=\"#000000\" d=\"M0 0L1 0Z\"/></g></svg>"
+
+        val result = SvgOpenTypeReader.read(
+            svgTable = overlappingSvgTable(document),
+            glyphCount = 3,
+            profile = profile(maxSvgDocuments = 2, maxSvgTransformOperations = 1),
+        )
+
+        assertIs<FontError.ResourceLimitExceeded>(assertIs<FontOperationResult.Failure>(result).error)
+    }
+
+    @Test
+    fun rejectsAnSvgTableWithNoDocumentList() {
+        val result = SvgOpenTypeReader.read(
+            svgTable = ByteArray(10),
+            glyphCount = 2,
+            profile = profile(),
+        )
+
+        assertIs<FontError.FontDataFailure>(assertIs<FontOperationResult.Failure>(result).error)
+    }
+
+    @Test
+    fun rejectsAnSvgTableWithAnEmptyDocumentList() {
+        val table = ByteArray(12).also { it.writeUInt32(2, 10u) }
+
+        val result = SvgOpenTypeReader.read(
+            svgTable = table,
+            glyphCount = 2,
+            profile = profile(),
+        )
+
+        assertIs<FontError.FontDataFailure>(assertIs<FontOperationResult.Failure>(result).error)
+    }
+
+    @Test
+    fun rejectsAnSvgTableWhoseReservedHeaderFieldIsNotZero() {
+        val table = svgTable("<svg xmlns=\"http://www.w3.org/2000/svg\"><path fill=\"#000000\" d=\"M0 0L1 0Z\"/></svg>")
+            .also { it.writeUInt32(6, 1u) }
+
+        val result = SvgOpenTypeReader.read(
+            svgTable = table,
+            glyphCount = 2,
+            profile = profile(),
+        )
+
+        assertIs<FontError.FontDataFailure>(assertIs<FontOperationResult.Failure>(result).error)
+    }
+
+    @Test
     fun rejectsATransformWhoseFiniteOperandsOverflowDuringComposition() {
         val result = SvgOpenTypeReader.read(
             svgTable(
@@ -82,6 +133,7 @@ class SvgOpenTypeReaderTest {
         maxDepth: Int = 4,
         maxSourceBytes: Int = 4_096,
         maxSvgDocuments: Int = 1,
+        maxSvgTransformOperations: Int = 4,
         maxNodes: Int = 4,
     ): PaintGraphProfile = PaintGraphProfile(
         acceptedNodeKinds = listOf(GlyphPaintNodeKind.PATH, GlyphPaintNodeKind.GROUP),
@@ -93,7 +145,7 @@ class SvgOpenTypeReaderTest {
             maxSourceBytes = maxSourceBytes,
             maxPaths = 2,
             maxSvgDocuments = maxSvgDocuments,
-            maxSvgTransformOperations = 4,
+            maxSvgTransformOperations = maxSvgTransformOperations,
         ),
         outlineProfile = OutlineProfile(
             maxBytes = 4_096,

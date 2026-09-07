@@ -24,9 +24,10 @@ Le périmètre fonctionnel supporté est volontairement étroit :
   pleins, de groupes ordonnés, d’une sélection exacte de palette CPAL et d’une
   couleur de premier plan explicite ;
 - table SVG-in-OpenType version 0 avec documents UTF-8 bruts uniquement :
-  éléments `svg`, `g` et `path` auto-fermants ; transformations `translate` et
-  `scale` ; commandes de chemin `M`, `L`, `H`, `V`, `C`, `S` et `Z` ; et
-  remplissages opaques `#RRGGBB`. Les scripts, ressources externes, entités,
+  éléments `svg` et `g` non auto-fermants, et éléments `path` auto-fermants ;
+  transformations `translate` et `scale` ; commandes de chemin `M`, `L`, `H`,
+  `V`, `C`, `S` et `Z` ; remplissages opaques `#RRGGBB`, ou `fill="none"` pour
+  un chemin explicitement sans encre. Les scripts, ressources externes, entités,
   animations, compression, gradients, clips (découpes), masques, contours tracés et
   attributs non déclarés sont refusés avant publication d’une ressource ;
 - strikes bitmap (images matricielles, tailles bitmap exactes) EBLC version 2 / EBDT version 2,

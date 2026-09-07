@@ -22,7 +22,8 @@ The supported functional scope is intentionally narrow:
   color;
 - SVG-in-OpenType table version 0 with raw UTF-8 documents only: `svg`, `g`,
   and self-closing `path` elements; `translate` and `scale`; `M`, `L`, `H`,
-  `V`, `C`, `S`, and `Z` path commands; and opaque `#RRGGBB` fills. Scripts,
+  `V`, `C`, `S`, and `Z` path commands; opaque `#RRGGBB` fills; and `fill="none"`
+  for explicitly inkless paths. Scripts,
   external resources, entities, animation, compression, gradients, clips,
   masks, strokes, and unlisted attributes are rejected before an asset is
   published;
