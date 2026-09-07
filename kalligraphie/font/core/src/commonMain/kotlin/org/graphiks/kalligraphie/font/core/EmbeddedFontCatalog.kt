@@ -91,6 +91,8 @@ public class EmbeddedFontCatalog(
                     shaping = true,
                     outline = true,
                     paintGraph = id in paintGraphSupportedFaces,
+                    bitmap = parsedFonts.getValue(id).tableRecords.containsKey("EBLC") &&
+                        parsedFonts.getValue(id).tableRecords.containsKey("EBDT"),
                 ),
             )
         }
@@ -136,7 +138,7 @@ public class EmbeddedFontCatalog(
                         code = "font.unsupported-representation-profile",
                         severity = FontDiagnosticSeverity.ERROR,
                         location = FontDiagnosticLocation.Source,
-                        message = "Only LAYOUT_ONLY, schemaVersion=1 outlines, and declared COLR/CPAL version 0 paint profiles are supported.",
+                        message = "Only LAYOUT_ONLY, schemaVersion=1 outlines, declared COLR/CPAL version 0 paint profiles, and declared EBDT format 1 bitmap profiles are supported.",
                     ),
                 ),
             )
@@ -157,6 +159,10 @@ public class EmbeddedFontCatalog(
             is org.graphiks.kalligraphie.api.OutlineProfile -> schemaVersion == 1
             is org.graphiks.kalligraphie.api.PaintGraphProfile ->
                 schemaVersion == 1 && faceId in paintGraphSupportedFaces
+            is org.graphiks.kalligraphie.api.BitmapProfile ->
+                schemaVersion == 1 &&
+                    parsedFonts.getValue(faceId).tableRecords.containsKey("EBLC") &&
+                    parsedFonts.getValue(faceId).tableRecords.containsKey("EBDT")
             else -> false
         }
 

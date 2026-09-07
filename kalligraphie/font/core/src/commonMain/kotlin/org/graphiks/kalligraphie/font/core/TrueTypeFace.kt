@@ -27,6 +27,7 @@ import org.graphiks.kalligraphie.api.GlyphMetrics
 import org.graphiks.kalligraphie.api.GlyphPaintIR
 import org.graphiks.kalligraphie.api.GlyphPaintNode
 import org.graphiks.kalligraphie.api.PaintGraphProfile
+import org.graphiks.kalligraphie.api.BitmapProfile
 import org.graphiks.kalligraphie.api.GlyphRepresentation
 import org.graphiks.kalligraphie.api.GlyphResolution
 import org.graphiks.kalligraphie.api.sortedDiagnostics
@@ -36,6 +37,8 @@ import org.graphiks.kalligraphie.font.sfnt.ColrCpalReader
 import org.graphiks.kalligraphie.font.sfnt.ColrCpalV0Data
 import org.graphiks.kalligraphie.font.sfnt.ColrCpalV0Limits
 import org.graphiks.kalligraphie.font.sfnt.ColrV0Layer
+import org.graphiks.kalligraphie.font.sfnt.EbdtFormatOneData
+import org.graphiks.kalligraphie.font.sfnt.EbdtFormatOneReader
 import org.graphiks.kalligraphie.font.sfnt.ParsedTrueTypeFont
 import org.graphiks.kalligraphie.font.sfnt.slice
 
@@ -219,9 +222,39 @@ internal data class TrueTypeFontInstance(
                     }
                 }
 
+                is BitmapProfile -> {
+                    if (renderVariant != FontRenderVariantSnapshot.default || profile.schemaVersion != 1) {
+                        failure(
+                            FontError.UnsupportedRepresentationProfile(
+                                "Schema version 1 EBDT bitmap assets accept only the default render variant.",
+                                FontDiagnosticLocation.FaceId(faceId),
+                            ),
+                        )
+                    } else {
+                        when (val bitmapData = readEbdtFormatOne(profile)) {
+                            is FontOperationResult.Success -> FontOperationResult.Success(
+                                EbdtFormatOneRenderAssetHandle(
+                                    faceId = faceId,
+                                    resourceLease = lease,
+                                    key = FontRenderAssetKey(
+                                        fontInstanceKey = key,
+                                        variant = renderVariant.key,
+                                        representationProfile = profile,
+                                        generation = resolver.generation,
+                                    ),
+                                    bitmapData = bitmapData.value,
+                                ),
+                            )
+
+                            is FontOperationResult.Failure -> bitmapData
+                            is FontOperationResult.Cancelled -> bitmapData
+                        }
+                    }
+                }
+
                 else -> failure(
                     FontError.UnsupportedRepresentationProfile(
-                        "The embedded TrueType provider supports only outline and COLR version 0 paint profiles.",
+                        "The embedded TrueType provider supports only outline, COLR version 0 paint, and EBDT format 1 bitmap profiles.",
                         FontDiagnosticLocation.FaceId(faceId),
                     ),
                 )
@@ -271,6 +304,19 @@ internal data class TrueTypeFontInstance(
             ),
             glyphCount = parsedFont.metadata.glyphCount,
         )
+    }
+
+    private fun readEbdtFormatOne(profile: BitmapProfile): FontOperationResult<EbdtFormatOneData> {
+        val eblcRecord = parsedFont.tableRecords["EBLC"]
+            ?: return failure(FontError.UnsupportedRepresentationProfile("The font has no EBLC table.", FontDiagnosticLocation.FaceId(faceId)))
+        val ebdtRecord = parsedFont.tableRecords["EBDT"]
+            ?: return failure(FontError.UnsupportedRepresentationProfile("The font has no EBDT table.", FontDiagnosticLocation.FaceId(faceId)))
+        val sourceBytes = resource.preparedFont.copySourceBytes()
+        val eblc = slice(sourceBytes, eblcRecord)
+            ?: return failure(FontError.InvalidFontData("EBLC table exceeds embedded source bytes.", FontDiagnosticLocation.Table("EBLC")))
+        val ebdt = slice(sourceBytes, ebdtRecord)
+            ?: return failure(FontError.InvalidFontData("EBDT table exceeds embedded source bytes.", FontDiagnosticLocation.Table("EBDT")))
+        return EbdtFormatOneReader.read(eblc, ebdt, parsedFont.metadata.glyphCount, profile)
     }
 
 }
@@ -431,6 +477,69 @@ internal class ColrV0RenderAssetHandle(
                 )
             }
             FontOperationResult.Success(GlyphRepresentation.Paint(paint))
+        } finally {
+            lease.release()
+        }
+    }
+
+    override fun close(): FontOperationResult<Unit> {
+        lifecycle.close()
+        return FontOperationResult.Success(Unit)
+    }
+
+    private fun releaseResourceLease() {
+        resourceLease?.release()
+        resourceLease = null
+    }
+}
+
+/** Asset handle for the explicitly supported EBLC index-format 1 / EBDT image-format 1 route. */
+internal class EbdtFormatOneRenderAssetHandle(
+    override val faceId: FontFaceId,
+    private var resourceLease: PreparedFontResourceLease?,
+    override val key: FontRenderAssetKey,
+    private val bitmapData: EbdtFormatOneData,
+) : FontRenderAssetHandle {
+    private val lifecycle = FontHandleLifecycle(::releaseResourceLease)
+
+    override fun detach(): FontOperationResult<FontRenderAssetHandle> {
+        val lease = lifecycle.acquireLease()
+            ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+        return try {
+            val detachedResourceLease = resourceLease?.resource?.acquireLease()
+                ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+            FontOperationResult.Success(
+                EbdtFormatOneRenderAssetHandle(
+                    faceId = faceId,
+                    resourceLease = detachedResourceLease,
+                    key = key,
+                    bitmapData = bitmapData,
+                ),
+            )
+        } finally {
+            lease.release()
+        }
+    }
+
+    override fun resolveGlyph(request: FontGlyphRequest): FontOperationResult<GlyphRepresentation> =
+        resolveGlyph(request, CancellationToken.none)
+
+    override fun resolveGlyph(
+        request: FontGlyphRequest,
+        cancellationToken: CancellationToken,
+    ): FontOperationResult<GlyphRepresentation> {
+        val lease = lifecycle.acquireLease()
+            ?: return failure(FontError.ResourceClosed("Render asset is closed."))
+        return try {
+            when (val decoded = bitmapData.decode(GlyphId(request.glyphId), cancellationToken)) {
+                is FontOperationResult.Success -> FontOperationResult.Success(
+                    decoded.value?.let(GlyphRepresentation::Bitmap) ?: GlyphRepresentation.Empty,
+                    decoded.diagnostics,
+                )
+
+                is FontOperationResult.Failure -> decoded
+                is FontOperationResult.Cancelled -> decoded
+            }
         } finally {
             lease.release()
         }
