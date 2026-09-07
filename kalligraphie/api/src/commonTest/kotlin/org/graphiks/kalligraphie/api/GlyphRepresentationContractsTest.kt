@@ -109,6 +109,26 @@ class GlyphRepresentationContractsTest {
     }
 
     @Test
+    fun renderAssetIdentityCannotCrossRepresentationProfiles() {
+        val outline = outlineProfile()
+        val paint = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE),
+            acceptedCompositionModes = emptyList(),
+            limits = PaintGraphLimits(maxNodes = 4, maxReferences = 0, maxDepth = 1),
+        )
+        val generation = FontCatalogGeneration(FontProviderId("embedded"), "generation-1")
+        val outlineKey = FontRenderAssetKey(instanceKey(), FontRenderVariantKey.default, outline, generation)
+        val paintKey = FontRenderAssetKey(
+            fontInstanceKey = instanceKey(),
+            variant = FontRenderVariantKey.default,
+            representationProfile = paint,
+            generation = generation,
+        )
+
+        assertNotEquals(outlineKey, paintKey)
+    }
+
+    @Test
     fun bitmapRepresentationOwnsItsDecodedPixels() {
         val decodedPixels = byteArrayOf(0, 127, -1, 64)
         val bitmap = BitmapGlyphIR(
