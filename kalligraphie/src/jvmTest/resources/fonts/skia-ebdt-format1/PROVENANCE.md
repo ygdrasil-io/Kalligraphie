@@ -10,8 +10,8 @@
 - Empreinte SHA-256 :
   `e99cebed4d9421bc89964b9dc6a3bedfc6a286029d64336a07844708cce76274`.
 - Licence : BSD-3-Clause ; voir `LICENSE.md`.
-- Format audité : TrueType avec `EBLC` version 2.0 et `EBDT` version 2.0,
-  index-subtable format 1, image format 1, profondeur d'un bit.
+- Format déclaré par cette fixture : TrueType avec `EBLC` version 2.0 et `EBDT`
+  version 2.0, index-subtable format 1, image format 1, profondeur d'un bit.
 
 ## Oracle indépendant
 
