@@ -103,9 +103,10 @@ public object ColrCpalReader {
     /**
      * Returns whether both tables declare the only versions this reader implements.
      *
-     * This inexpensive header check is suitable for publishing a face capability. Full structural
-     * validation, including all offsets and palette references, remains part of [read] and is
-     * performed before an asset is acquired.
+     * This inexpensive header check is not sufficient to publish a face capability because it
+     * does not validate offsets or palette references. Use
+     * [hasStructurallyValidVersionZeroTables] when publishing a capability; [read] still applies
+     * the consumer's stricter resource limits before an asset is acquired.
      */
     public fun hasSupportedVersionZeroHeaders(
         colrTable: ByteArray,

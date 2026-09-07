@@ -79,6 +79,7 @@ public class EmbeddedFontCatalog(
                 generation = generation,
                 parsedFont = parsedFonts.getValue(id),
                 resource = resources.getValue(id),
+                paintGraphSupported = id in paintGraphSupportedFaces,
             )
         }
         faces = ids.map { id ->
@@ -146,35 +147,37 @@ public class EmbeddedFontCatalog(
     private fun FontAccessRequirementsSnapshot.isSupportedForEmbeddedTrueType(faceId: FontFaceId): Boolean =
         when (mode) {
             FontAccessRequirementsSnapshot.Mode.LAYOUT_ONLY -> true
-            FontAccessRequirementsSnapshot.Mode.RENDERABLE -> acceptedProfiles.firstOrNull().let { profile ->
-                when (profile) {
-                    is org.graphiks.kalligraphie.api.OutlineProfile -> profile.schemaVersion == 1
-                    is org.graphiks.kalligraphie.api.PaintGraphProfile ->
-                        profile.schemaVersion == 1 &&
-                            faceId in paintGraphSupportedFaces
-                    else -> false
-                }
+            FontAccessRequirementsSnapshot.Mode.RENDERABLE -> acceptedProfiles.any { profile ->
+                profile.isSupportedForEmbeddedTrueType(faceId)
             }
         }
 
-    private fun supportsColrCpalV0(
-        resource: PreparedFontResource,
-        parsedFont: ParsedTrueTypeFont,
-    ): Boolean {
-        val colrRecord = parsedFont.tableRecords["COLR"] ?: return false
-        val cpalRecord = parsedFont.tableRecords["CPAL"] ?: return false
-        val sourceBytes = resource.preparedFont.copySourceBytes()
-        val colr = slice(sourceBytes, colrRecord) ?: return false
-        val cpal = slice(sourceBytes, cpalRecord) ?: return false
-        return ColrCpalReader.hasStructurallyValidVersionZeroTables(
-            colrTable = colr,
-            cpalTable = cpal,
-            glyphCount = parsedFont.metadata.glyphCount,
-        )
-    }
+    private fun org.graphiks.kalligraphie.api.GlyphRepresentationProfile.isSupportedForEmbeddedTrueType(faceId: FontFaceId): Boolean =
+        when (this) {
+            is org.graphiks.kalligraphie.api.OutlineProfile -> schemaVersion == 1
+            is org.graphiks.kalligraphie.api.PaintGraphProfile ->
+                schemaVersion == 1 && faceId in paintGraphSupportedFaces
+            else -> false
+        }
 
     private fun failure(error: FontError, diagnostics: List<FontDiagnostic> = listOf(error.toDiagnostic())): FontOperationResult.Failure =
         FontOperationResult.Failure(error, diagnostics.sortedDiagnostics())
+}
+
+private fun supportsColrCpalV0(
+    resource: PreparedFontResource,
+    parsedFont: ParsedTrueTypeFont,
+): Boolean {
+    val colrRecord = parsedFont.tableRecords["COLR"] ?: return false
+    val cpalRecord = parsedFont.tableRecords["CPAL"] ?: return false
+    val sourceBytes = resource.preparedFont.copySourceBytes()
+    val colr = slice(sourceBytes, colrRecord) ?: return false
+    val cpal = slice(sourceBytes, cpalRecord) ?: return false
+    return ColrCpalReader.hasStructurallyValidVersionZeroTables(
+        colrTable = colr,
+        cpalTable = cpal,
+        glyphCount = parsedFont.metadata.glyphCount,
+    )
 }
 
 /**
@@ -235,6 +238,7 @@ internal class EmbeddedFontAssetResolver(
             faceId = face,
             generation = generation,
             parsedFont = parsedFont,
+            paintGraphSupported = supportsColrCpalV0(resource, parsedFont),
         ).acquireRenderAsset(
             resolver = this,
             renderVariant = variant,

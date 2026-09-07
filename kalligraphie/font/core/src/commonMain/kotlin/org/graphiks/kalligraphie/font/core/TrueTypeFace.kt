@@ -44,6 +44,7 @@ internal class TrueTypeFace(
     private val generation: FontCatalogGeneration,
     private val parsedFont: ParsedTrueTypeFont,
     private val resource: PreparedFontResource,
+    private val paintGraphSupported: Boolean,
 ) : FontFace {
     override val metadata: FontFaceMetadata = parsedFont.metadata
     override val id: FontFaceId = faceId
@@ -77,6 +78,7 @@ internal class TrueTypeFace(
                 faceId = id,
                 generation = generation,
                 parsedFont = parsedFont,
+                paintGraphSupported = paintGraphSupported,
             ),
         )
     }
@@ -100,6 +102,7 @@ internal data class TrueTypeFontInstance(
     private val faceId: FontFaceId,
     private val generation: FontCatalogGeneration,
     private val parsedFont: ParsedTrueTypeFont,
+    private val paintGraphSupported: Boolean,
 ) : FontInstance {
     override fun resolveGlyph(codePoint: Int): FontOperationResult<GlyphResolution> {
         return resource.preparedFont.resolveGlyph(codePoint)
@@ -144,7 +147,7 @@ internal data class TrueTypeFontInstance(
         if (requirements.mode != FontAccessRequirementsSnapshot.Mode.RENDERABLE) {
             return failure(FontError.UnsupportedRepresentationProfile("A renderable access mode is required.", FontDiagnosticLocation.FaceId(faceId)))
         }
-        val profile = requirements.acceptedProfiles.firstOrNull()
+        val profile = requirements.acceptedProfiles.firstOrNull(::isSupportedProfile)
             ?: return failure(FontError.UnsupportedRepresentationProfile("At least one representation profile is required.", FontDiagnosticLocation.FaceId(faceId)))
         if (resolver !is EmbeddedFontAssetResolver) {
             return failure(FontError.InvalidFontData("Resolver was not opened by the embedded TrueType catalog.", FontDiagnosticLocation.FaceId(faceId)))
@@ -230,6 +233,16 @@ internal data class TrueTypeFontInstance(
             throw throwable
         }
     }
+
+    private fun isSupportedProfile(profile: org.graphiks.kalligraphie.api.GlyphRepresentationProfile): Boolean =
+        when (profile) {
+            is org.graphiks.kalligraphie.api.OutlineProfile ->
+                profile.schemaVersion == 1 &&
+                    parsedFont.tableRecords.containsKey("glyf") &&
+                    parsedFont.tableRecords.containsKey("loca")
+            is PaintGraphProfile -> profile.schemaVersion == 1 && paintGraphSupported
+            else -> false
+        }
 
     private fun readColrCpalV0(profile: PaintGraphProfile): FontOperationResult<ColrCpalV0Data> {
         val colrRecord = parsedFont.tableRecords["COLR"]
