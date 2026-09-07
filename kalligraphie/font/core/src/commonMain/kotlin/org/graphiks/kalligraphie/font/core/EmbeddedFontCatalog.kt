@@ -49,6 +49,7 @@ public class EmbeddedFontCatalog(
 ) : FontCatalogSnapshot {
     private val resources: Map<FontFaceId, PreparedFontResource>
     private val parsedFonts: Map<FontFaceId, ParsedTrueTypeFont>
+    private val outlineRouteSupportedFaces: Set<FontFaceId>
     private val paintGraphSupportedFaces: Set<FontFaceId>
     private val bitmapRouteSupportedFaces: Set<FontFaceId>
     private val resolvedFaces: Map<FontFaceId, TrueTypeFace>
@@ -72,6 +73,9 @@ public class EmbeddedFontCatalog(
             id to PreparedFontResource(PreparedTrueTypeFont(entry.source, entry.parsedFont))
         }
         parsedFonts = ids.zip(capturedEntries).associate { (id, entry) -> id to entry.parsedFont }
+        outlineRouteSupportedFaces = ids.filter { id ->
+            supportsGlyfOutlineRoute(resources.getValue(id), parsedFonts.getValue(id))
+        }.toSet()
         paintGraphSupportedFaces = ids.filter { id ->
             supportsColrCpalV0(resources.getValue(id), parsedFonts.getValue(id))
         }.toSet()
@@ -84,6 +88,7 @@ public class EmbeddedFontCatalog(
                 generation = generation,
                 parsedFont = parsedFonts.getValue(id),
                 resource = resources.getValue(id),
+                outlineRouteSupported = id in outlineRouteSupportedFaces,
                 paintGraphSupported = id in paintGraphSupportedFaces,
                 bitmapRouteSupported = id in bitmapRouteSupportedFaces,
             )
@@ -95,7 +100,7 @@ public class EmbeddedFontCatalog(
                 capabilities = FontFaceCapabilities(
                     characterMapping = true,
                     shaping = true,
-                    outline = true,
+                    outline = id in outlineRouteSupportedFaces,
                     paintGraph = id in paintGraphSupportedFaces,
                     bitmap = id in bitmapRouteSupportedFaces,
                 ),
@@ -161,7 +166,8 @@ public class EmbeddedFontCatalog(
 
     private fun org.graphiks.kalligraphie.api.GlyphRepresentationProfile.isSupportedForEmbeddedTrueType(faceId: FontFaceId): Boolean =
         when (this) {
-            is org.graphiks.kalligraphie.api.OutlineProfile -> schemaVersion == 1
+            is org.graphiks.kalligraphie.api.OutlineProfile ->
+                schemaVersion == 1 && faceId in outlineRouteSupportedFaces
             is org.graphiks.kalligraphie.api.PaintGraphProfile ->
                 schemaVersion == 1 && faceId in paintGraphSupportedFaces
             is org.graphiks.kalligraphie.api.BitmapProfile ->
@@ -171,6 +177,24 @@ public class EmbeddedFontCatalog(
 
     private fun failure(error: FontError, diagnostics: List<FontDiagnostic> = listOf(error.toDiagnostic())): FontOperationResult.Failure =
         FontOperationResult.Failure(error, diagnostics.sortedDiagnostics())
+}
+
+private fun supportsGlyfOutlineRoute(
+    resource: PreparedFontResource,
+    parsedFont: ParsedTrueTypeFont,
+): Boolean {
+    val glyfRecord = parsedFont.tableRecords["glyf"] ?: return false
+    val locaRecord = parsedFont.tableRecords["loca"] ?: return false
+    val sourceBytes = resource.preparedFont.copySourceBytes()
+    if (slice(sourceBytes, glyfRecord) == null) return false
+    val loca = slice(sourceBytes, locaRecord) ?: return false
+    val entrySize = when (parsedFont.indexToLocFormat) {
+        0 -> 2
+        1 -> 4
+        else -> return false
+    }
+    val expectedLocaBytes = (parsedFont.metadata.glyphCount.toLong() + 1L) * entrySize.toLong()
+    return expectedLocaBytes <= Int.MAX_VALUE.toLong() && loca.size == expectedLocaBytes.toInt()
 }
 
 private fun supportsColrCpalV0(
@@ -258,9 +282,10 @@ internal class EmbeddedFontAssetResolver(
             resource = resource,
             faceId = face,
             generation = generation,
-        parsedFont = parsedFont,
-        paintGraphSupported = supportsColrCpalV0(resource, parsedFont),
-        bitmapRouteSupported = supportsEbdtFormatOneRoute(resource, parsedFont),
+            parsedFont = parsedFont,
+            outlineRouteSupported = supportsGlyfOutlineRoute(resource, parsedFont),
+            paintGraphSupported = supportsColrCpalV0(resource, parsedFont),
+            bitmapRouteSupported = supportsEbdtFormatOneRoute(resource, parsedFont),
         ).acquireRenderAsset(
             resolver = this,
             renderVariant = variant,
@@ -285,7 +310,9 @@ internal class EmbeddedFontAssetResolver(
             is org.graphiks.kalligraphie.api.OutlineProfile ->
                 key.variant == FontRenderVariantKey.default &&
                     profile.schemaVersion == 1 &&
-                    parsedFont.tableRecords.containsKey("glyf") && parsedFont.tableRecords.containsKey("loca")
+                    resources[instance.face]?.let { resource ->
+                        supportsGlyfOutlineRoute(resource, parsedFont)
+                    } == true
             is org.graphiks.kalligraphie.api.PaintGraphProfile ->
                 profile.schemaVersion == 1 &&
                     parsedFont.tableRecords.containsKey("COLR") && parsedFont.tableRecords.containsKey("CPAL")

@@ -47,6 +47,7 @@ internal class TrueTypeFace(
     private val generation: FontCatalogGeneration,
     private val parsedFont: ParsedTrueTypeFont,
     private val resource: PreparedFontResource,
+    private val outlineRouteSupported: Boolean,
     private val paintGraphSupported: Boolean,
     private val bitmapRouteSupported: Boolean,
 ) : FontFace {
@@ -82,6 +83,7 @@ internal class TrueTypeFace(
                 faceId = id,
                 generation = generation,
                 parsedFont = parsedFont,
+                outlineRouteSupported = outlineRouteSupported,
                 paintGraphSupported = paintGraphSupported,
                 bitmapRouteSupported = bitmapRouteSupported,
             ),
@@ -107,6 +109,7 @@ internal data class TrueTypeFontInstance(
     private val faceId: FontFaceId,
     private val generation: FontCatalogGeneration,
     private val parsedFont: ParsedTrueTypeFont,
+    private val outlineRouteSupported: Boolean,
     private val paintGraphSupported: Boolean,
     private val bitmapRouteSupported: Boolean,
 ) : FontInstance {
@@ -273,9 +276,7 @@ internal data class TrueTypeFontInstance(
     private fun isSupportedProfile(profile: org.graphiks.kalligraphie.api.GlyphRepresentationProfile): Boolean =
         when (profile) {
             is org.graphiks.kalligraphie.api.OutlineProfile ->
-                profile.schemaVersion == 1 &&
-                    parsedFont.tableRecords.containsKey("glyf") &&
-                    parsedFont.tableRecords.containsKey("loca")
+                profile.schemaVersion == 1 && outlineRouteSupported
             is PaintGraphProfile -> profile.schemaVersion == 1 && paintGraphSupported
             is BitmapProfile ->
                 profile.schemaVersion == 1 && bitmapRouteSupported

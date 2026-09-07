@@ -1,10 +1,10 @@
 package org.graphiks.kalligraphie
 
+import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicLong
-import java.util.stream.Collectors
 import org.graphiks.kalligraphie.api.FontCatalogGeneration
 import org.graphiks.kalligraphie.api.FontCatalogSnapshot
 import org.graphiks.kalligraphie.api.FontError
@@ -27,6 +27,13 @@ import org.graphiks.kalligraphie.font.sfnt.SfntReader
  */
 public class MacosSystemFontCatalogOptions(
     roots: List<String> = defaultRoots(),
+    /**
+     * Maximum filesystem paths inspected while discovering one snapshot.
+     *
+     * The provider also considers at most this many configured roots, so nonexistent roots cannot
+     * make discovery unbounded. A root directory itself consumes one inspected path.
+     */
+    public val maxPathsToVisit: Int = 512,
     /** Maximum number of accepted TrueType faces retained by one snapshot. */
     public val maxFaces: Int = 32,
     /** Maximum byte size accepted for one source file. */
@@ -34,18 +41,17 @@ public class MacosSystemFontCatalogOptions(
     /** Maximum aggregate source bytes retained by one snapshot. */
     public val maxTotalSourceBytes: Int = 64 * 1024 * 1024,
 ) {
-    /** Immutable system font roots searched in deterministic lexical order. */
+    /** Immutable system font roots searched in their supplied order. */
     public val roots: List<String> = Collections.unmodifiableList(roots.toList())
 
     init {
         require(this.roots.isNotEmpty()) { "At least one macOS font root is required." }
         require(this.roots.all(String::isNotBlank)) { "macOS font roots must not be blank." }
         require(this.roots.distinct().size == this.roots.size) { "macOS font roots must not repeat." }
+        require(maxPathsToVisit > 0) { "maxPathsToVisit must be positive." }
         require(maxFaces > 0) { "maxFaces must be positive." }
         require(maxSourceBytes > 0) { "maxSourceBytes must be positive." }
-        require(maxTotalSourceBytes >= maxSourceBytes) {
-            "maxTotalSourceBytes must retain at least one maximum-sized source."
-        }
+        require(maxTotalSourceBytes > 0) { "maxTotalSourceBytes must be positive." }
     }
 
     /** Default roots owned by macOS and the current macOS user account. */
@@ -70,14 +76,18 @@ public class MacosSystemFontCatalogOptions(
  */
 public object MacosSystemFontCatalog {
     /**
-     * Captures a bounded, deterministic snapshot of supported macOS system TrueType fonts.
+     * Captures a bounded snapshot of supported macOS system TrueType fonts.
      *
-     * The operation walks [options.roots] lexically, considers regular `.ttf` files only, and
-     * copies each accepted file before parsing. Unreadable or unsupported candidates are skipped
-     * without becoming face records. The result fails when invoked off macOS, when no supported
-     * face fits the limits, or when no configured root can provide one. Callers own and must close
-     * each resolver and render asset obtained from the successful snapshot; closing either never
-     * reopens or rereads a system file. Concurrent calls produce independent generations.
+     * The operation inspects no more than [MacosSystemFontCatalogOptions.maxPathsToVisit] paths,
+     * considers regular `.ttf` files only, then orders the captured candidates lexically. Each
+     * source is copied through a byte limit before parsing, so a file changing between discovery
+     * and capture cannot bypass [MacosSystemFontCatalogOptions.maxSourceBytes]. Unreadable or
+     * unsupported candidates are skipped without becoming face records. Reaching a discovery
+     * limit may yield a partial successful snapshot, but returns a typed limit error if it leaves
+     * no retained face. The result also fails when invoked off macOS or when no configured root
+     * can provide a supported face. Callers own and must close each resolver and render asset
+     * obtained from the successful snapshot; closing either never reopens or rereads a system
+     * file. Concurrent calls produce independent generations.
      *
      * @param options bounded discovery and retained-byte policy for this snapshot.
      * @return a detached portable catalog snapshot, or a typed unsupported, limit, or source
@@ -96,22 +106,31 @@ public object MacosSystemFontCatalog {
         val entries = mutableListOf<EmbeddedFontCatalogEntry>()
         val seenSources = mutableSetOf<FontSourceId>()
         var retainedBytes = 0L
-        var skippedForLimit = false
-        for (path in candidates(options.roots)) {
+        val discovery = candidates(options.roots, options.maxPathsToVisit)
+        var skippedForLimit = discovery.truncated
+        for (path in discovery.paths) {
             if (entries.size == options.maxFaces) break
-            val byteSize = runCatching { Files.size(path) }.getOrNull() ?: continue
-            if (byteSize <= 0L || byteSize > options.maxSourceBytes.toLong() || retainedBytes > options.maxTotalSourceBytes.toLong() - byteSize) {
+            val remainingBytes = options.maxTotalSourceBytes.toLong() - retainedBytes
+            if (remainingBytes <= 0L) {
                 skippedForLimit = true
                 continue
             }
-            val bytes = runCatching { Files.readAllBytes(path) }.getOrNull() ?: continue
-            if (bytes.size.toLong() != byteSize) continue
+            val maximumBytes = minOf(options.maxSourceBytes.toLong(), remainingBytes).toInt()
+            val bytes = when (val capture = readBounded(path, maximumBytes)) {
+                is BoundedSourceRead.Bytes -> capture.value
+                BoundedSourceRead.TooLarge -> {
+                    skippedForLimit = true
+                    continue
+                }
+
+                BoundedSourceRead.Unreadable -> continue
+            }
             val source = FontSource(bytes, FontSourceProvenance(path.fileName.toString()))
             if (!seenSources.add(source.id)) continue
             when (val parsed = SfntReader.readMetadata(source)) {
                 is FontOperationResult.Success -> {
                     entries += EmbeddedFontCatalogEntry(source, parsed.value)
-                    retainedBytes += byteSize
+                    retainedBytes += bytes.size.toLong()
                 }
 
                 is FontOperationResult.Failure,
@@ -137,19 +156,65 @@ public object MacosSystemFontCatalog {
         return FontOperationResult.Success(EmbeddedFontCatalog(generation, entries))
     }
 
-    private fun candidates(roots: List<String>): List<Path> =
-        roots.flatMap { root ->
+    private fun candidates(roots: List<String>, maximumPaths: Int): Discovery {
+        val paths = mutableListOf<Path>()
+        var inspectedPaths = 0
+        var truncated = false
+        for ((rootIndex, root) in roots.withIndex()) {
+            if (rootIndex >= maximumPaths || inspectedPaths >= maximumPaths) {
+                truncated = true
+                break
+            }
             runCatching {
                 Files.walk(Path.of(root)).use { stream ->
-                    stream
-                        .filter { path -> Files.isRegularFile(path) && path.fileName.toString().endsWith(".ttf", ignoreCase = true) }
-                        .collect(Collectors.toList())
+                    val iterator = stream.iterator()
+                    while (iterator.hasNext() && inspectedPaths < maximumPaths) {
+                        val path = iterator.next()
+                        inspectedPaths += 1
+                        if (Files.isRegularFile(path) && path.fileName.toString().endsWith(".ttf", ignoreCase = true)) {
+                            paths.add(path)
+                        }
+                    }
+                    if (iterator.hasNext()) truncated = true
                 }
-            }.getOrDefault(emptyList())
-        }.sortedBy { path -> path.toAbsolutePath().normalize().toString() }
+            }
+        }
+        if (roots.size > maximumPaths) truncated = true
+        return Discovery(paths.sortedBy { path -> path.toAbsolutePath().normalize().toString() }, truncated)
+    }
 
     private fun isMacos(): Boolean = System.getProperty("os.name").startsWith("Mac")
+
 }
+
+private data class Discovery(
+    val paths: List<Path>,
+    val truncated: Boolean,
+)
+
+private sealed interface BoundedSourceRead {
+    data class Bytes(val value: ByteArray) : BoundedSourceRead
+
+    data object TooLarge : BoundedSourceRead
+
+    data object Unreadable : BoundedSourceRead
+}
+
+private fun readBounded(path: Path, maximumBytes: Int): BoundedSourceRead =
+    runCatching {
+        Files.newInputStream(path).use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(8 * 1024)
+            var retainedBytes = 0
+            while (retainedBytes < maximumBytes) {
+                val count = input.read(buffer, 0, minOf(buffer.size, maximumBytes - retainedBytes))
+                if (count < 0) return@use BoundedSourceRead.Bytes(output.toByteArray())
+                output.write(buffer, 0, count)
+                retainedBytes += count
+            }
+            if (input.read() < 0) BoundedSourceRead.Bytes(output.toByteArray()) else BoundedSourceRead.TooLarge
+        }
+    }.getOrElse { BoundedSourceRead.Unreadable }
 
 private val nextGeneration: AtomicLong = AtomicLong(0)
 

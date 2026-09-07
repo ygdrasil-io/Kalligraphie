@@ -1,16 +1,22 @@
 package org.graphiks.kalligraphie
 
+import java.nio.file.Files
 import org.graphiks.kalligraphie.api.FontAccessRequirementsSnapshot
 import org.graphiks.kalligraphie.api.FontError
+import org.graphiks.kalligraphie.api.FontGlyphRequest
 import org.graphiks.kalligraphie.api.FontInstanceDescriptor
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontRenderVariantKey
+import org.graphiks.kalligraphie.api.FontSourceProvenance
+import org.graphiks.kalligraphie.api.GlyphRepresentation
 import org.graphiks.kalligraphie.api.LayoutUnit
 import org.graphiks.kalligraphie.api.OutlineProfile
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class MacosSystemFontCatalogTest {
@@ -26,13 +32,25 @@ class MacosSystemFontCatalogTest {
         assertNotEquals(first.generation, second.generation)
         assertTrue(first.faces.map { it.id }.toSet().intersect(second.faces.map { it.id }.toSet()).isNotEmpty())
 
-        val face = success(first.resolveFace(first.faces.first().id, requirements))
+        val selected = assertNotNull(first.faces.firstNotNullOfOrNull { record ->
+            if (!record.capabilities.outline) return@firstNotNullOfOrNull null
+            val face = (first.resolveFace(record.id, FontAccessRequirementsSnapshot.layoutOnly()) as? FontOperationResult.Success)?.value
+                ?: return@firstNotNullOfOrNull null
+            val instance = (face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))) as? FontOperationResult.Success)?.value
+                ?: return@firstNotNullOfOrNull null
+            val glyphId = (instance.resolveGlyph(0x41) as? FontOperationResult.Success)?.value?.glyphId
+                ?: return@firstNotNullOfOrNull null
+            glyphId.takeIf { it.value != 0 }?.let { record.id to it }
+        })
+        val face = success(first.resolveFace(selected.first, requirements))
         val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
         val firstResolver = success(first.openAssetResolver())
         val secondResolver = success(second.openAssetResolver())
         try {
             val asset = success(instance.acquireRenderAsset(firstResolver, FontRenderVariantKey.default, requirements))
             try {
+                val representation = success(asset.resolveGlyph(FontGlyphRequest(selected.second)))
+                assertIs<GlyphRepresentation.Outline>(representation)
                 assertIs<FontError.IncompatibleCatalogGeneration>(
                     assertIs<FontOperationResult.Failure>(secondResolver.reopen(asset.key)).error,
                 )
@@ -45,6 +63,43 @@ class MacosSystemFontCatalogTest {
         }
     }
 
+    @Test
+    fun stopsBeforeReadingAValidSystemFontWhenTheDiscoveryBudgetEndsAtTheRoot() {
+        if (!System.getProperty("os.name").startsWith("Mac")) return
+
+        val root = Files.createTempDirectory("kalligraphie-system-font-budget")
+        try {
+            Files.write(root.resolve("valid.ttf"), minimalTrueTypeFont(glyphCount = 1, tables = emptyMap()))
+
+            val result = MacosSystemFontCatalog.open(
+                MacosSystemFontCatalogOptions(
+                    roots = listOf(root.toString()),
+                    maxPathsToVisit = 1,
+                    maxFaces = 1,
+                    maxSourceBytes = 4_096,
+                    maxTotalSourceBytes = 4_096,
+                ),
+            )
+
+            assertIs<FontError.ResourceLimitExceeded>(assertIs<FontOperationResult.Failure>(result).error)
+        } finally {
+            Files.deleteIfExists(root.resolve("valid.ttf"))
+            Files.deleteIfExists(root)
+        }
+    }
+
+    @Test
+    fun doesNotAdvertiseAnOutlineRouteWhenAParsedFontLacksGlyfData() {
+        val source = minimalTrueTypeFont(glyphCount = 1, tables = emptyMap()).also { bytes ->
+            replaceTableTag(bytes, "glyf", "JUNK")
+        }
+        val catalog = success(Kalligraphie.embedded(source, FontSourceProvenance("No glyf route")))
+        val result = catalog.resolveFace(catalog.faces.single().id, FontAccessRequirementsSnapshot.renderable(outlineProfile()))
+
+        assertFalse(catalog.faces.single().capabilities.outline)
+        assertIs<FontError.UnsupportedRepresentationProfile>(assertIs<FontOperationResult.Failure>(result).error)
+    }
+
     private fun outlineProfile(): OutlineProfile = OutlineProfile(
         maxBytes = 1_000_000,
         maxContours = 16_384,
@@ -55,4 +110,16 @@ class MacosSystemFontCatalogTest {
 
     private fun <T> success(result: FontOperationResult<T>): T =
         assertIs<FontOperationResult.Success<T>>(result).value
+
+    private fun replaceTableTag(font: ByteArray, expected: String, replacement: String) {
+        val tableCount = ((font[4].toInt() and 0xFF) shl 8) or (font[5].toInt() and 0xFF)
+        repeat(tableCount) { index ->
+            val offset = 12 + index * 16
+            if ((0 until 4).all { tagIndex -> font[offset + tagIndex].toInt().toChar() == expected[tagIndex] }) {
+                replacement.forEachIndexed { tagIndex, character -> font[offset + tagIndex] = character.code.toByte() }
+                return
+            }
+        }
+        error("Missing $expected table in synthetic source.")
+    }
 }
