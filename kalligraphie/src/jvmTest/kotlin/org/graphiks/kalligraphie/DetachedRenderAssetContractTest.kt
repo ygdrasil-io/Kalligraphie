@@ -17,6 +17,9 @@ import org.graphiks.kalligraphie.api.GlyphId
 import org.graphiks.kalligraphie.api.GlyphRepresentation
 import org.graphiks.kalligraphie.api.LayoutUnit
 import org.graphiks.kalligraphie.api.OutlineProfile
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -161,6 +164,38 @@ class DetachedRenderAssetContractTest {
     }
 
     @Test
+    fun resolutionAlreadyInFlightCompletesWhileConcurrentCloseRejectsTheNextResolution() {
+        val opened = openRenderableFont(fixtureBytes(), 2048f)
+        val enteredResolution = CountDownLatch(1)
+        val continueResolution = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+
+        try {
+            val inFlight = executor.submit<FontOperationResult<GlyphRepresentation>> {
+                opened.asset.resolveGlyph(
+                    FontGlyphRequest(GlyphId(36)),
+                    BlockingCancellationToken(enteredResolution, continueResolution),
+                )
+            }
+            assertTrue(enteredResolution.await(5, TimeUnit.SECONDS), "outline resolution did not begin")
+
+            assertIs<FontOperationResult.Success<Unit>>(opened.asset.close())
+            continueResolution.countDown()
+
+            assertIs<GlyphRepresentation.Outline>(success(inFlight.get(5, TimeUnit.SECONDS)))
+            val afterClose = assertIs<FontOperationResult.Failure>(
+                opened.asset.resolveGlyph(FontGlyphRequest(GlyphId(36)), CancellationToken.none),
+            )
+            assertIs<FontError.ResourceClosed>(afterClose.error)
+        } finally {
+            continueResolution.countDown()
+            executor.shutdownNow()
+            opened.asset.close()
+            opened.resolver.close()
+        }
+    }
+
+    @Test
     fun restrictiveOutlineProfileReturnsTypedLimitFailureThroughPublicRoute() {
         val catalog = catalogFor(fixtureBytes())
         val resolver = success(catalog.openAssetResolver())
@@ -244,3 +279,14 @@ private data class DetachedFontResources(
     val instance: FontInstance,
     val asset: FontRenderAssetHandle,
 )
+
+private class BlockingCancellationToken(
+    private val enteredResolution: CountDownLatch,
+    private val continueResolution: CountDownLatch,
+) : CancellationToken {
+    override fun isCancellationRequested(): Boolean {
+        enteredResolution.countDown()
+        check(continueResolution.await(5, TimeUnit.SECONDS)) { "test did not release the in-flight resolution" }
+        return false
+    }
+}

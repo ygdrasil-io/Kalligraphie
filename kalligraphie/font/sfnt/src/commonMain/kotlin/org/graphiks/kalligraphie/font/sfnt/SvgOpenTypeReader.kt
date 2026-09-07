@@ -299,7 +299,7 @@ public object SvgOpenTypeReader {
 
     private fun parseBrush(token: SvgTag, gradients: Map<String, SvgGradientBuilder>): GlyphPaintBrush? {
         if (!token.attributes.keys.all { it == "id" || it == "d" || it == "fill" || it == "fill-rule" || it == "transform" }) return null
-        if (token.attributes["fill-rule"] !in setOf(null, "nonzero", "evenodd")) return null
+        if (token.attributes["fill-rule"] !in setOf(null, "nonzero")) return null
         if (token.attributes.containsKey("transform") && parseMatrix(token.attributes.getValue("transform")) == null) return null
         val fill = token.attributes["fill"] ?: "black"
         if (fill == "none") return null

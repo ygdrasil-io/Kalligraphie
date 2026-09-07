@@ -120,6 +120,35 @@ class SvgOpenTypeGlyphRepresentationTest {
         }
     }
 
+    @Test
+    fun rejectsAnSvgFillRuleThatThePortablePaintIrCannotRepresent() {
+        val malicious = fixtureBytes().also { bytes ->
+            rewriteLastSvgDocument(bytes) { document ->
+                document
+                    .replace(" version=\"1.1\"", "")
+                    .replace(" fill=\"url(#g1)\"", " fill-rule=\"evenodd\"")
+                    .replace("</svg>", "          </svg>")
+            }
+        }
+        val catalog = success(Kalligraphie.embedded(malicious, FontSourceProvenance("unsupported SVG fill rule sample")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(svgProfile()))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+
+        try {
+            val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
+            try {
+                val failure = assertIs<FontOperationResult.Failure>(asset.resolveGlyph(FontGlyphRequest(GlyphId(27))))
+                assertIs<FontError.UnsupportedRepresentationProfile>(failure.error)
+            } finally {
+                asset.close()
+            }
+        } finally {
+            resolver.close()
+        }
+    }
+
     private fun svgProfile(maxSvgDepth: Int = 8): PaintGraphProfile = PaintGraphProfile(
         acceptedNodeKinds = listOf(GlyphPaintNodeKind.PATH, GlyphPaintNodeKind.TRANSFORM),
         acceptedCompositionModes = emptyList(),
@@ -159,6 +188,30 @@ class SvgOpenTypeGlyphRepresentationTest {
             offset + expectedBytes.size <= bytes.size && expectedBytes.indices.all { index -> bytes[offset + index] == expectedBytes[index] }
         }.lastOrNull() ?: error("Test fixture does not contain $expected")
         replacement.encodeToByteArray().forEachIndexed { index, value -> bytes[start + index] = value }
+    }
+
+    private fun rewriteLastSvgDocument(bytes: ByteArray, transform: (String) -> String) {
+        val start = lastAsciiIndex(bytes, "<svg") ?: error("Test fixture has no SVG document")
+        val close = asciiIndex(bytes, "</svg>", start) ?: error("Test fixture has an unterminated SVG document")
+        val end = close + "</svg>".length
+        val document = bytes.copyOfRange(start, end).decodeToString()
+        val rewritten = transform(document)
+        require(rewritten.length == document.length) { "Test mutation must preserve the SVG document length" }
+        rewritten.encodeToByteArray().copyInto(bytes, destinationOffset = start)
+    }
+
+    private fun lastAsciiIndex(bytes: ByteArray, expected: String): Int? {
+        val expectedBytes = expected.encodeToByteArray()
+        return bytes.indices.lastOrNull { offset ->
+            offset + expectedBytes.size <= bytes.size && expectedBytes.indices.all { index -> bytes[offset + index] == expectedBytes[index] }
+        }
+    }
+
+    private fun asciiIndex(bytes: ByteArray, expected: String, start: Int): Int? {
+        val expectedBytes = expected.encodeToByteArray()
+        return (start..bytes.size - expectedBytes.size).firstOrNull { offset ->
+            expectedBytes.indices.all { index -> bytes[offset + index] == expectedBytes[index] }
+        }
     }
 
     private fun <T> success(result: FontOperationResult<T>): T = when (result) {

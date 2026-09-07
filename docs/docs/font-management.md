@@ -1,35 +1,74 @@
 # Font Management
 
-Kalligraphie exposes an embedded TrueType path through
-`org.graphiks:kalligraphie` on the JVM reference target only. The public
-contracts stay portable, but this executable route is JVM-only. A
-consumer supplies captured SFNT bytes to `Kalligraphie.embedded(...)`,
-selects a stable face record, creates a font instance, and uses a render asset handle to
-materialize `GlyphOutlineIR` outlines.
+Kalligraphie exposes embedded and JVM system-font catalogs through
+`org.graphiks:kalligraphie`. The common contracts stay portable, while the
+executable reference route is JVM-only. A consumer opens an immutable catalog,
+selects a stable face record, creates an instance, acquires a detachable render
+asset, and resolves one certified glyph without parsing OpenType or retaining a
+renderer resource.
 
 The supported functional scope is intentionally narrow:
 
 - JVM reference target only;
 - static SFNT TrueType only: `0x00010000` and `true`;
-- embedded OpenType sources with face index `0` for each source;
+- embedded OpenType sources with face index `0` for each source, or an immutable
+  snapshot of `.ttf` files found in the supported JVM system-font directories;
 - `LAYOUT_ONLY` for cmap and metrics;
-- `RENDERABLE` only with `OutlineProfile` schema version `1`;
-- glyph outlines in design units, with separately scaled `LayoutUnit`
-  metrics;
+- `RENDERABLE` with an explicitly ordered compatible profile:
+  `OutlineProfile` schema version `1`, `PaintGraphProfile` schema version `1`,
+  or `BitmapProfile` schema version `1`;
+- TrueType outlines in design units, with separately scaled `LayoutUnit` metrics;
+- COLR/CPAL version `0` paint graphs with solid outline layers and source-order
+  grouping, including an explicitly selected CPAL palette and foreground color;
+- uncompressed OpenType `SVG ` version `0` documents reduced to bounded paths,
+  matrix transforms, solid fills, and linear or radial gradients; the source SVG
+  document is never returned to the caller;
+- EBLC version `2` index-subtable format `1` with EBDT version `2` image format
+  `1` one-bit pixels, normalized as `Alpha8` sRGB bitmap glyphs;
 - detached render assets that keep resolving after the owning resolver or
   attached handle is closed.
 
+No native bridge is currently implemented. `NativeHandleProfile`, COLR version
+`1`, compressed SVG, SVG scripts, links, animation, filters, masks, clips,
+images and text, bitmap codecs other than EBDT image format `1`, CFF/CFF2,
+collections, variations, synthetic styles, and GPU or rasterizer APIs are
+rejected before a representation is certified. Profile limits bound source
+bytes, graph nodes and references, SVG depth and geometry, bitmap dimensions,
+pixels, and decoded bytes. A requested route is never silently replaced with a
+native or less-faithful route.
+
 ```kotlin
-val catalogResult = Kalligraphie.embedded(bytes, provenance)
-val faceId = catalog.faces.single().id
-val size = FontInstanceDescriptor(LayoutUnit(2048f))
+fun <T> success(result: FontOperationResult<T>): T = when (result) {
+    is FontOperationResult.Success -> result.value
+    is FontOperationResult.Failure -> error(result.error.message)
+    is FontOperationResult.Cancelled -> error("cancelled")
+}
+
+val catalog = success(Kalligraphie.embedded(bytes, provenance))
+val resolver = success(catalog.openAssetResolver())
 val requirements = FontAccessRequirementsSnapshot.renderable(outlineProfile)
+val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(2048f))))
+val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantSnapshot.default, requirements))
+val certified = success(asset.resolveGlyphCertified(FontGlyphRequest(GlyphId(36))))
+val sameCertifiedRepresentation = success(asset.resolveCertifiedGlyph(certified.certificate))
+val detached = success(asset.detach())
+asset.close()
+resolver.close()
+val stillUsable = success(detached.resolveCertifiedGlyph(certified.certificate))
+detached.close()
 ```
 
-Renderable glyph access requires an explicit outline profile. Closing a
-resolver or render asset is idempotent. New acquisitions after closure return
-`font.resource-closed`; a detached asset owns the immutable data required for
-`resolveGlyph(...)`.
+The snippet uses an outline profile; a paint or bitmap request follows the
+identical lifecycle with its own explicit profile and limits. It deliberately
+shows a certificate: `resolveCertifiedGlyph(...)` accepts only the exact asset
+key, glyph ID, selected profile, schema version, route, render variant, and
+catalog generation that produced it. Closing a resolver or render asset is
+idempotent. An operation already admitted may finish, later acquisitions return
+`font.resource-closed`, and a detached asset owns the immutable data required
+for a later resolution. `JvmFontCatalogs.openSystemFontCatalog()` follows the
+same sequence for an installed JVM font snapshot; every invocation creates a
+new provider generation.
 
 ## Exact editable Unicode lines
 
@@ -97,8 +136,9 @@ asset key. A resolver may reopen such a key only in the captured generation;
 a detached asset remains independently usable after its originating resolver
 closes.
 
-Out of scope for the editable-line API: hyphenation,
-justification, vertical writing, rendering pixels, GPU APIs, TTC/OTC,
-CFF/CFF2, variations, synthetic styles, COLR, SVG, bitmap glyphs, and system
-fonts. See [Editable Paragraphs](editable-paragraphs.md) for the JVM multiline
-paragraph route.
+Out of scope for the editable-line API: hyphenation, justification, vertical
+writing, rendering pixels, GPU APIs, TTC/OTC, CFF/CFF2, variations, synthetic
+styles, and system-font fallback. Its renderable mode remains outline-only;
+use the standalone catalog route above for the supported COLR/CPAL, SVG, and
+bitmap representations. See [Editable Paragraphs](editable-paragraphs.md) for
+the JVM multiline paragraph route.
