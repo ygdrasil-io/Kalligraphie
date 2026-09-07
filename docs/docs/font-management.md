@@ -107,9 +107,12 @@ navigation, selection geometry, and deterministic hit testing.
 
 For `RENDERABLE` output, replace `LayoutOnly` with
 `EditableLineMaterialization.Renderable` and provide an open resolver, a
-variant, and an `OutlineProfile`. Every published final glyph then carries an
-outline-route certificate tied to its exact `FontRenderAssetKey`. The resolver
-remains caller-owned; the facade borrows it only during the synchronous call.
+`FontRenderVariantSnapshot`, and `FontAccessRequirementsSnapshot` containing
+one or more ordered representation profiles. The provider selects the first
+profile it can certify. Every published final glyph then carries an exact
+outline, paint-graph, bitmap, or inkless-route certificate tied to its
+`FontRenderAssetKey`. The resolver remains caller-owned; the facade borrows it
+only during the synchronous call.
 
 The embedded HarfBuzz 14.3.0 backend is the JVM reference implementation. Its
 Linux and macOS x64/arm64 resources are pinned, hash-verified, and never found
@@ -128,7 +131,7 @@ one face, and shapes the affected contiguous context.
 
 In `LAYOUT_ONLY`, a candidate must map and shape the complete unit. In
 `RENDERABLE`, it must additionally materialize every final shaped glyph with
-the requested outline profile. Failed candidates are blacklisted for the
+one accepted representation profile. Failed candidates are blacklisted for the
 operation and never silently retried for the same unit and profile. The
 published `PositionedGlyphRun` records its actual `FontInstanceKey`; every
 renderable glyph carries a certificate tied to its exact generation-bound
@@ -138,7 +141,6 @@ closes.
 
 Out of scope for the editable-line API: hyphenation,
 justification, vertical writing, rendering pixels, GPU APIs, TTC/OTC,
-CFF/CFF2, variations, synthetic styles, and render routes other than the
-outline route it explicitly requests. See
+CFF/CFF2, variations, and synthetic styles. See
 [Editable Paragraphs](editable-paragraphs.md) for the JVM multiline paragraph
 route.
