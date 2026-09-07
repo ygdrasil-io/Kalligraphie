@@ -5,6 +5,7 @@ import org.graphiks.kalligraphie.api.FontCatalogGeneration
 import org.graphiks.kalligraphie.api.FontDiagnostic
 import org.graphiks.kalligraphie.api.FontError
 import org.graphiks.kalligraphie.api.FontOperationResult
+import org.graphiks.kalligraphie.api.FontProviderId
 import org.graphiks.kalligraphie.api.FontSource
 import org.graphiks.kalligraphie.api.FontSourceId
 import org.graphiks.kalligraphie.api.FontSourceProvenance
@@ -124,7 +125,8 @@ public object Kalligraphie {
         }
 
         val generation = FontCatalogGeneration(
-            capturedSources.joinToString(prefix = "embedded-", separator = ".") { source ->
+            provider = FontProviderId("embedded-opentype"),
+            value = capturedSources.joinToString(prefix = "embedded-", separator = ".") { source ->
                 (source.id as FontSourceId.Portable).contentDigest.value
             },
         )
