@@ -551,6 +551,12 @@ public sealed interface GlyphRepresentation {
         public val outline: GlyphOutlineIR,
     ) : GlyphRepresentation
 
+    /** Represents a glyph with a complete portable paint graph. */
+    public data class Paint(
+        /** Materialized paint-graph intermediate representation. */
+        public val paint: GlyphPaintIR,
+    ) : GlyphRepresentation
+
     /** Represents a glyph with decoded portable bitmap pixels. */
     public data class Bitmap(
         /** Materialized bitmap intermediate representation. */

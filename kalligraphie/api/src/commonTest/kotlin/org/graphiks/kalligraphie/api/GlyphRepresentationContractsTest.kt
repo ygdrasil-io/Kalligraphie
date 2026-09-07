@@ -8,6 +8,19 @@ import kotlin.test.assertNotEquals
 
 class GlyphRepresentationContractsTest {
     @Test
+    fun paintGraphsRejectReferenceCyclesBeforePublication() {
+        assertFailsWith<IllegalArgumentException> {
+            GlyphPaintIR(
+                schemaVersion = 1,
+                rootNode = 0,
+                nodes = listOf(
+                    GlyphPaintNode.Group(children = listOf(0)),
+                ),
+            )
+        }
+    }
+
+    @Test
     fun representationKeysKeepPaletteVariantsInSeparateCacheDomains() {
         val profile = outlineProfile()
         val assetKey = FontRenderAssetKey(
