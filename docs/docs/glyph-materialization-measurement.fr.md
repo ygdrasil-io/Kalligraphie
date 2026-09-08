@@ -8,7 +8,7 @@ fixes) COLR/CPAL, SVG-in-OpenType et EBDT format 1 auditées et versionnées, à
 travers le parcours public catalogue, resolver (résolveur), instance, asset
 (ressource de rendu) et `resolveGlyph(...)`.
 
-Le runner enregistre neuf profils, dans cet ordre :
+Le runner enregistre treize profils, dans cet ordre :
 
 - normalisation COLR v0 / CPAL v0 froide et chaude ;
 - normalisation SVG-in-OpenType froide et chaude ;
@@ -17,6 +17,11 @@ Le runner enregistre neuf profils, dans cet ordre :
 - pression par clé de profil SVG, éviction LRU (least recently used, moins
   récemment utilisé) puis nouvelle résolution ;
 - annulation coopérative pendant une matérialisation COLR réelle à deux couches.
+- parcours consommateur public `RENDERABLE` froid et chaud avec un glyphe latin
+  Bungee Color ;
+- parcours consommateur public `RENDERABLE` froid et chaud avec un paragraphe
+  BiDi (bidirectionnel) mêlant Bungee Color latin et le fallback (police de
+  repli) hébreu Liberation Sans.
 
 Un échantillon froid commence avant la création du catalogue embarqué et se
 termine après consommation de la représentation immuable retournée. Un
@@ -28,6 +33,16 @@ palette 1 après une amorce palette 0. Le profil de pression comprend l’amorce
 cinq clés SVG certifiées distinctes et la résolution finale. Le profil
 d’annulation mesure l’entrée de l’appel jusqu’au retour d’annulation typé et,
 séparément, le premier signal d’annulation intervenant pendant l’opération.
+
+Les profils consommateur froids incluent la création du catalogue et du
+resolver, puis s’arrêtent lorsque la façade publique de paragraphe a produit et
+consommé un layout dont tous les glyphes finaux portent un certificat de
+matérialisation. Les profils consommateur chauds gardent catalogue et resolver
+ouverts, amorcent le cache de représentations portables par un premier layout
+hors mesure, puis chronomètrent la même frontière de façade publique. La façade
+JVM ouvre et ferme volontairement son backend (moteur interne) de shaping
+(façonnage) documenté à chaque appel : ces profils chauds mesurent donc la
+réutilisation du cache d’assets, jamais une réutilisation cachée du backend.
 
 ## Exécution reproductible
 
