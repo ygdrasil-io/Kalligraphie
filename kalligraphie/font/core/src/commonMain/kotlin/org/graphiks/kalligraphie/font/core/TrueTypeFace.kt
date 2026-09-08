@@ -796,10 +796,17 @@ internal class EbdtFormatOneRenderAssetHandle(
             when (val decoded = bitmapData.decode(glyphId, cancellationToken)) {
                 is FontOperationResult.Success -> {
                     if (cancellationToken.isCancellationRequested()) FontOperationResult.Cancelled()
-                    else FontOperationResult.Success(
-                        decoded.value?.let(GlyphRepresentation::Bitmap) ?: GlyphRepresentation.Empty,
-                        decoded.diagnostics,
-                    ).also { success -> resource.cacheRepresentation(representationKey, success) }
+                    else {
+                        val representation: GlyphRepresentation = if (
+                            decoded.value.copyDecodedPixels().any { pixel -> pixel != 0.toByte() }
+                        ) {
+                            GlyphRepresentation.Bitmap(decoded.value)
+                        } else {
+                            GlyphRepresentation.Empty
+                        }
+                        FontOperationResult.Success(representation, decoded.diagnostics)
+                            .also { success -> resource.cacheRepresentation(representationKey, success) }
+                    }
                 }
 
                 is FontOperationResult.Failure -> decoded

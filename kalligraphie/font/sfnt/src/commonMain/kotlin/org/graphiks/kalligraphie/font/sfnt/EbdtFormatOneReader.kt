@@ -29,18 +29,24 @@ public class EbdtFormatOneData internal constructor(
     /**
      * Decodes one validated glyph into portable alpha pixels.
      *
-     * @return `null` when the selected strike has no bitmap for [glyphId], a complete immutable
-     * bitmap, or cancellation without partial pixels.
+     * @return a complete immutable bitmap, a typed unavailable-representation failure when the
+     * selected strike has no bitmap for [glyphId], or cancellation without partial pixels. An
+     * absent strike record is not evidence that the glyph has no ink.
      */
     public fun decode(
         glyphId: GlyphId,
         cancellationToken: CancellationToken = CancellationToken.none,
-    ): FontOperationResult<BitmapGlyphIR?> {
+    ): FontOperationResult<BitmapGlyphIR> {
         if (cancellationToken.isCancellationRequested()) return FontOperationResult.Cancelled()
         if (glyphId.value !in 0 until glyphCount) {
             return FontOperationResult.Failure(FontError.GlyphOutOfRange(glyphId.value, location = FontDiagnosticLocation.Glyph(glyphId.value)))
         }
-        val record = records[glyphId] ?: return FontOperationResult.Success(null)
+        val record = records[glyphId] ?: return FontOperationResult.Failure(
+            FontError.GlyphRepresentationUnavailable(
+                glyphId = glyphId.value,
+                message = "The selected EBDT strike has no bitmap for glyph ${glyphId.value}.",
+            ),
+        )
         val pixels = ByteArray(record.width * record.height)
         var output = 0
         for (row in 0 until record.height) {

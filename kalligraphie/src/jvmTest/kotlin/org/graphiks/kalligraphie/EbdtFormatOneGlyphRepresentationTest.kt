@@ -96,6 +96,47 @@ class EbdtFormatOneGlyphRepresentationTest {
     }
 
     @Test
+    fun reportsAnUnavailableBitmapInsteadOfPublishingAnEmptyGlyphForAnOmittedStrikeRecord() {
+        val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(bitmapProfile()))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+
+        try {
+            val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
+            try {
+                val failure = assertIs<FontOperationResult.Failure>(asset.resolveGlyph(FontGlyphRequest(GlyphId(1))))
+                assertIs<FontError.GlyphRepresentationUnavailable>(failure.error)
+            } finally {
+                asset.close()
+            }
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
+    fun publishesEmptyForAValidatedBitmapRecordWhoseAlphaPixelsAreAllZero() {
+        val catalog = success(Kalligraphie.embedded(transparentGrinningFaceFixtureBytes(), FontSourceProvenance("Transparent Skia EBDT format 1")))
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(bitmapProfile()))
+        val resolver = success(catalog.openAssetResolver())
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(16f))))
+
+        try {
+            val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
+            try {
+                assertEquals(GlyphRepresentation.Empty, success(asset.resolveGlyph(FontGlyphRequest(GlyphId(3)))))
+            } finally {
+                asset.close()
+            }
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
     fun rejectsTheWholeSelectedStrikeBeforePublishingAnAssetWhenItsPixelsExceedTheProfileLimit() {
         val catalog = success(Kalligraphie.embedded(fixtureBytes(), FontSourceProvenance("Skia EBDT format 1")))
         val requirements = FontAccessRequirementsSnapshot.renderable(
@@ -233,6 +274,23 @@ class EbdtFormatOneGlyphRepresentationTest {
         checkNotNull(javaClass.getResourceAsStream("/fonts/skia-ebdt-format1/ebdt_fmt1.ttf")) {
             "Skia EBDT format 1 fixture is missing"
         }.use { input -> input.readBytes() }
+
+    private fun transparentGrinningFaceFixtureBytes(): ByteArray = fixtureBytes().also { font ->
+        val eblcOffset = tableOffset(font, "EBLC")
+        val ebdtOffset = tableOffset(font, "EBDT")
+        val indexSubtableArrayOffset = readUInt32(font, eblcOffset + 8)
+        val additionalOffset = readUInt32(font, eblcOffset + indexSubtableArrayOffset + 4)
+        val subtableOffset = eblcOffset + indexSubtableArrayOffset + additionalOffset
+        val firstGlyph = readUInt16(font, subtableOffset + 8)
+        val glyphOffset = 3 - firstGlyph
+        val imageDataOffset = readUInt32(font, subtableOffset + 4)
+        val imageOffsetsOffset = subtableOffset + 8
+        val imageOffset = readUInt32(font, imageOffsetsOffset + glyphOffset * 4)
+        val nextImageOffset = readUInt32(font, imageOffsetsOffset + (glyphOffset + 1) * 4)
+        val packedPixelsStart = ebdtOffset + imageDataOffset + imageOffset + 5
+        val packedPixelsEnd = ebdtOffset + imageDataOffset + nextImageOffset
+        for (index in packedPixelsStart until packedPixelsEnd) font[index] = 0
+    }
 
     private fun tableOffset(font: ByteArray, tag: String): Int {
         val tableCount = readUInt16(font, 4)

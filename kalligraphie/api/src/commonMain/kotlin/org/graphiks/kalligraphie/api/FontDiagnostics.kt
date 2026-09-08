@@ -183,6 +183,25 @@ public sealed interface FontError {
         override val code: String = "font.glyph-out-of-range"
     }
 
+    /**
+     * The selected route cannot materialize an in-range glyph.
+     *
+     * This is distinct from an empty glyph: a provider returns it when the requested glyph lacks
+     * data on an otherwise accepted route, so a consumer never treats an absent source record as
+     * drawable-free content. A certificate is issued only after this condition has been excluded
+     * for its exact glyph, asset, variant, and profile.
+     */
+    public data class GlyphRepresentationUnavailable(
+        /** In-range glyph identifier unavailable from the selected representation route. */
+        public val glyphId: Int,
+        /** Error message describing why the route cannot materialize the glyph. */
+        override val message: String,
+        /** Location of the unavailable glyph representation. */
+        override val location: FontDiagnosticLocation = FontDiagnosticLocation.Glyph(glyphId),
+    ) : FontError {
+        override val code: String = "font.glyph-representation-unavailable"
+    }
+
     /** A numeric geometry conversion could not be represented safely. */
     public data class GeometryOverflow(
         /** Error message describing the overflow. */

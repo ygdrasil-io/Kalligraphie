@@ -443,9 +443,11 @@ public interface FontRenderAssetHandle {
      * Resolves [request] to a glyph representation.
      *
      * The operation is read-only and may be invoked concurrently. It returns
-     * [FontError.GlyphOutOfRange] for an unknown glyph, a representation or
-     * resource-limit failure when the requested output cannot be produced, and
-     * [FontError.ResourceClosed] after the handle's close linearization point.
+     * [FontError.GlyphOutOfRange] for an unknown glyph,
+     * [FontError.GlyphRepresentationUnavailable] when an accepted route has no data for an
+     * in-range glyph, a representation or resource-limit failure when the requested output
+     * cannot be produced, and [FontError.ResourceClosed] after the handle's close linearization
+     * point.
      */
     public fun resolveGlyph(request: FontGlyphRequest): FontOperationResult<GlyphRepresentation>
 
@@ -665,7 +667,12 @@ public data class VerticalGlyphMetrics(
 
 /** Representation returned for a resolved glyph. */
 public sealed interface GlyphRepresentation {
-    /** Represents a glyph without materialized outline data. */
+    /**
+     * Represents a glyph certified to have no paintable ink on the selected route.
+     *
+     * This is never used as a substitute for missing, unsupported, or invalid representation
+     * data; those conditions return a typed [FontError] instead.
+     */
     public data object Empty : GlyphRepresentation
 
     /** Represents a glyph with a materialized outline. */
