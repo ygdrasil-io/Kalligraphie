@@ -59,7 +59,7 @@ public class JvmIncrementalParagraphLayoutRequest(
     public val baseDirection: BaseDirection,
     /** Explicit BCP 47 language used by Unicode analysis and shaping. */
     public val language: String,
-    /** Layout-only or synchronously outline-certified materialization borrowed for this call. */
+    /** Layout-only or synchronously profile-certified materialization borrowed for this call. */
     public val materialization: EditableLineMaterialization = EditableLineMaterialization.LayoutOnly,
     /** Complete-line overflow behavior forwarded to the JVM paragraph composer. */
     public val overflowPolicy: OverflowPolicy = OverflowPolicy.Continue,
@@ -658,5 +658,5 @@ public class JvmIncrementalParagraphLayoutSession private constructor(
 
 private fun EditableLineMaterialization.identityForSession(): Any = when (this) {
     EditableLineMaterialization.LayoutOnly -> "layout-only"
-    is EditableLineMaterialization.Renderable -> listOf(variant, outlineProfile)
+    is EditableLineMaterialization.Renderable -> listOf(renderVariant, requirements)
 }

@@ -129,10 +129,14 @@ le hit-testing (test de point) déterministe.
 
 Pour obtenir `RENDERABLE`, remplacez `LayoutOnly` par
 `EditableLineMaterialization.Renderable` et fournissez un gestionnaire ouvert,
-une variante et un `OutlineProfile`. Chaque glyphe final publié porte alors un
-certificat de route outline (contour) lié à son `FontRenderAssetKey` exact. Le
-gestionnaire reste la propriété de l’appelant ; la façade ne l’emprunte que
-pendant l’appel synchrone.
+un `FontRenderVariantSnapshot` (sélection visuelle) et un
+`FontAccessRequirementsSnapshot` contenant un ou plusieurs profils de
+représentation ordonnés. Le provider (fournisseur) sélectionne le premier
+profil qu’il peut certifier. Chaque glyphe final publié porte alors un
+certificat exact de route contour, graphe de peinture, bitmap (image
+matricielle) ou sans encre, lié à son `FontRenderAssetKey`. Le gestionnaire
+reste la propriété de l’appelant ; la façade ne l’emprunte que pendant l’appel
+synchrone.
 
 Le backend HarfBuzz 14.3.0 embarqué est l’implémentation de référence JVM. Ses
 ressources Linux et macOS x64/arm64 sont épinglées, vérifiées par hash
@@ -155,7 +159,7 @@ affecté.
 
 En mode `LAYOUT_ONLY`, un candidat doit couvrir et composer toute l’unité. En
 mode `RENDERABLE`, il doit aussi matérialiser chaque glyphe final composé dans
-le profil de contour demandé. Les candidats rejetés sont placés dans une
+un profil de représentation accepté. Les candidats rejetés sont placés dans une
 blacklist (liste d’exclusion) propre à l’opération et ne sont jamais réessayés
 silencieusement pour la même unité et le même profil. Chaque
 `PositionedGlyphRun` publié identifie sa `FontInstanceKey` (clé d’instance de
@@ -166,6 +170,6 @@ façon indépendante après la fermeture de son gestionnaire d’origine.
 
 Hors périmètre de l’API de ligne éditable : césure,
 justification, écriture verticale, rendu en pixels, API GPU, TTC/OTC,
-CFF/CFF2, variations, styles synthétiques, COLR, SVG, glyphes matriciels et
-fontes système. Consultez [Paragraphes éditables](editable-paragraphs.md) pour
-le parcours multiligne JVM.
+CFF/CFF2, variations et styles synthétiques. Consultez
+[Paragraphes éditables](editable-paragraphs.md) pour le parcours multiligne
+JVM.

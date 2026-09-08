@@ -70,7 +70,7 @@ public class JvmEditableParagraphFacadeRequest(
     /** Font geometry applied to every selected face. */
     public val fontInstanceDescriptor: FontInstanceDescriptor,
     features: List<OpenTypeFeature> = emptyList(),
-    /** Layout-only or synchronously outline-certified publication mode. */
+    /** Layout-only or synchronously profile-certified publication mode. */
     public val materialization: EditableLineMaterialization = EditableLineMaterialization.LayoutOnly,
     /** Complete-line overflow behavior; ellipsis truncation when [OverflowPolicy.Ellipsis] is selected. */
     public val overflowPolicy: OverflowPolicy = OverflowPolicy.Continue,    /** Tab stops, alignment, and justification applied to the paragraph lines. */

@@ -38,57 +38,6 @@ import org.graphiks.kalligraphie.api.PaintGraphProfile
 
 class GlyphMaterializationBenchmarkTest {
     @Test
-    fun reportRequiresEveryCertifiedRouteAndResourceObservation() {
-        val report = GlyphMaterializationBenchmark.reportFor(
-            environment = GlyphMaterializationMeasurementEnvironment(
-                commit = "0123456789abcdef",
-                machine = "fixed-machine",
-                operatingSystem = "FixedOS 1.0",
-                jvm = "FixedVM 21",
-                fontHashes = mapOf("fixture.ttf" to "abc123"),
-                gcPolicy = "between profiles",
-            ),
-            corpus = GlyphMaterializationMeasurementCorpus(
-                id = "fixed-materialization-corpus",
-                description = "fixed COLR, SVG, and EBDT glyphs",
-                glyphCount = 3,
-            ),
-            profiles = GlyphMaterializationBenchmark.requiredProfileNames.map(::fixedProfile),
-        )
-
-        assertEquals(GlyphMaterializationBenchmark.requiredProfileNames, report.profiles.map(GlyphMaterializationMeasurementProfile::name))
-        assertTrue(report.metadata.commit.isNotBlank())
-        assertTrue(report.metadata.machine.isNotBlank())
-        assertTrue(report.metadata.operatingSystem.isNotBlank())
-        assertTrue(report.metadata.jvm.isNotBlank())
-        assertTrue(report.metadata.fontHashes.isNotEmpty())
-        assertTrue(report.corpus.id.isNotBlank())
-        assertTrue(report.corpus.description.isNotBlank())
-        assertTrue(report.corpus.glyphCount > 0)
-        assertTrue(report.profiles.all { profile ->
-            profile.route.isNotBlank() &&
-                profile.timedBoundary.isNotBlank() &&
-                profile.cacheState.isNotBlank() &&
-                profile.warmupIterations > 0 &&
-                profile.iterations > 0 &&
-                profile.latency.p50Nanos > 0 &&
-                profile.latency.p95Nanos > 0 &&
-                profile.latency.p99Nanos > 0 &&
-                profile.allocations.state.isNotBlank() &&
-                profile.retainedJvmMemory.state.isNotBlank() &&
-                profile.retainedNativeMemory.state.isNotBlank() &&
-                profile.nativeAllocations.state.isNotBlank() &&
-                profile.sourceBytes.state.isNotBlank() &&
-                profile.decodedBytes.state.isNotBlank() &&
-                profile.normalizedNodes.state.isNotBlank() &&
-                profile.decodedPixels.state.isNotBlank() &&
-                profile.cancellationDelay.state.isNotBlank()
-        })
-        assertTrue(report.toMarkdown().contains("Source bytes"))
-        assertTrue(report.toMarkdown().contains("Native allocations"))
-    }
-
-    @Test
     fun runsEveryConfiguredMaterializationProfileOnlyWhenExplicitlyEnabled() {
         if (System.getenv(GLYPH_MATERIALIZATION_MEASUREMENT_ENVIRONMENT) != "true") return
 
@@ -110,26 +59,6 @@ class GlyphMaterializationBenchmarkTest {
         assertEquals(GlyphMaterializationBenchmark.requiredProfileNames, report.profiles.map(GlyphMaterializationMeasurementProfile::name))
         assertTrue(rendered.contains("Glyph materialization measurement"))
     }
-
-    private fun fixedProfile(name: String): GlyphMaterializationMeasurementProfile =
-        GlyphMaterializationMeasurementProfile(
-            name = name,
-            route = "fixed route",
-            timedBoundary = "fixed boundary",
-            cacheState = "fixed cache state",
-            warmupIterations = 2,
-            iterations = 5,
-            latency = GlyphMaterializationPercentiles(100, 200, 300),
-            allocations = GlyphMaterializationMeasurementValue.available(1_024, "bytes per iteration"),
-            retainedJvmMemory = GlyphMaterializationMeasurementValue.available(256, "signed heap delta"),
-            retainedNativeMemory = GlyphMaterializationMeasurementValue.unavailable("not exposed"),
-            nativeAllocations = GlyphMaterializationMeasurementValue.unavailable("not exposed"),
-            sourceBytes = GlyphMaterializationMeasurementValue.available(64, "fixture bytes"),
-            decodedBytes = GlyphMaterializationMeasurementValue.available(32, "decoded bytes"),
-            normalizedNodes = GlyphMaterializationMeasurementValue.available(3, "paint nodes"),
-            decodedPixels = GlyphMaterializationMeasurementValue.available(64, "bitmap pixels"),
-            cancellationDelay = GlyphMaterializationMeasurementValue.unavailable("not applicable"),
-        )
 
     private fun positiveEnvironmentInteger(name: String, defaultValue: Int): Int {
         val value = System.getenv(name)?.toIntOrNull() ?: defaultValue

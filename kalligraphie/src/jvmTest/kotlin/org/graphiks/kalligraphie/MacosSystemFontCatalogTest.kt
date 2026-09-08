@@ -9,6 +9,8 @@ import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontRenderVariantKey
 import org.graphiks.kalligraphie.api.FontSourceProvenance
 import org.graphiks.kalligraphie.api.GlyphRepresentation
+import org.graphiks.kalligraphie.api.GlyphRepresentationKey
+import org.graphiks.kalligraphie.api.GlyphRepresentationProfileKey
 import org.graphiks.kalligraphie.api.LayoutUnit
 import org.graphiks.kalligraphie.api.OutlineProfile
 import kotlin.test.Test
@@ -88,6 +90,70 @@ class MacosSystemFontCatalogTest {
     }
 
     @Test
+    fun preservesPortableAssetIdentityAcrossGenerationsButRequiresTheOwningResolverForReopening() {
+        if (!System.getProperty("os.name").startsWith("Mac")) return
+
+        val root = Files.createTempDirectory("kalligraphie-system-font-asset-identity")
+        try {
+            Files.write(root.resolve("BungeeColor-Regular.ttf"), resourceBytes("/fonts/bungee-color/BungeeColor-Regular.ttf"))
+            val options = MacosSystemFontCatalogOptions(
+                roots = listOf(root.toString()),
+                maxPathsToVisit = 2,
+                maxFaces = 1,
+                maxSourceBytes = 16 * 1024 * 1024,
+                maxTotalSourceBytes = 16 * 1024 * 1024,
+            )
+            val requirements = FontAccessRequirementsSnapshot.renderable(outlineProfile())
+            val firstCatalog = success(MacosSystemFontCatalog.open(options))
+            val secondCatalog = success(MacosSystemFontCatalog.open(options))
+            val firstFace = success(firstCatalog.resolveFace(firstCatalog.faces.single().id, requirements))
+            val secondFace = success(secondCatalog.resolveFace(secondCatalog.faces.single().id, requirements))
+            val firstInstance = success(firstFace.instantiate(FontInstanceDescriptor(LayoutUnit(1_000f))))
+            val secondInstance = success(secondFace.instantiate(FontInstanceDescriptor(LayoutUnit(1_000f))))
+            val glyph = success(firstInstance.resolveGlyph(0x41)).glyphId
+            val firstResolver = success(firstCatalog.openAssetResolver())
+            val secondResolver = success(secondCatalog.openAssetResolver())
+
+            try {
+                assertEquals(glyph, success(secondInstance.resolveGlyph(0x41)).glyphId)
+                val firstAsset = success(firstInstance.acquireRenderAsset(firstResolver, FontRenderVariantKey.default, requirements))
+                val secondAsset = success(secondInstance.acquireRenderAsset(secondResolver, FontRenderVariantKey.default, requirements))
+                try {
+                    assertEquals(firstAsset.key.semanticIdentity, secondAsset.key.semanticIdentity)
+                    assertNotEquals(firstAsset.key, secondAsset.key)
+                    assertEquals(
+                        GlyphRepresentationKey(
+                            firstAsset.key,
+                            glyph,
+                            FontRenderVariantKey.default,
+                            GlyphRepresentationProfileKey.outline(outlineProfile()),
+                        ),
+                        GlyphRepresentationKey(
+                            secondAsset.key,
+                            glyph,
+                            FontRenderVariantKey.default,
+                            GlyphRepresentationProfileKey.outline(outlineProfile()),
+                        ),
+                    )
+                    assertIs<GlyphRepresentation.Outline>(success(firstAsset.resolveGlyph(FontGlyphRequest(glyph))))
+                    assertIs<FontError.IncompatibleCatalogGeneration>(
+                        assertIs<FontOperationResult.Failure>(secondResolver.reopen(firstAsset.key)).error,
+                    )
+                } finally {
+                    firstAsset.close()
+                    secondAsset.close()
+                }
+            } finally {
+                firstResolver.close()
+                secondResolver.close()
+            }
+        } finally {
+            Files.deleteIfExists(root.resolve("BungeeColor-Regular.ttf"))
+            Files.deleteIfExists(root)
+        }
+    }
+
+    @Test
     fun stopsBeforeReadingAValidSystemFontWhenTheDiscoveryBudgetEndsAtTheRoot() {
         if (!System.getProperty("os.name").startsWith("Mac")) return
 
@@ -134,6 +200,9 @@ class MacosSystemFontCatalogTest {
 
     private fun <T> success(result: FontOperationResult<T>): T =
         assertIs<FontOperationResult.Success<T>>(result).value
+
+    private fun resourceBytes(path: String): ByteArray =
+        checkNotNull(javaClass.getResourceAsStream(path)) { "Fixture font resource is missing: $path" }.use { input -> input.readBytes() }
 
     private fun replaceTableTag(font: ByteArray, expected: String, replacement: String) {
         val tableCount = ((font[4].toInt() and 0xFF) shl 8) or (font[5].toInt() and 0xFF)

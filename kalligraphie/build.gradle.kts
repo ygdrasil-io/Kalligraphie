@@ -24,3 +24,18 @@ kotlin {
 tasks.withType<Test>().configureEach {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
 }
+
+val glyphMaterializationBenchmarkClass = "org.graphiks.kalligraphie.GlyphMaterializationBenchmarkTest"
+val jvmTestTask = tasks.named<Test>("jvmTest")
+
+jvmTestTask.configure {
+    filter.excludeTestsMatching(glyphMaterializationBenchmarkClass)
+}
+
+tasks.register<Test>("glyphMaterializationMeasurement") {
+    group = "verification"
+    description = "Runs the opt-in glyph materialization measurement outside the functional test suite."
+    testClassesDirs = jvmTestTask.get().testClassesDirs
+    classpath = jvmTestTask.get().classpath
+    filter.includeTestsMatching("$glyphMaterializationBenchmarkClass.runsEveryConfiguredMaterializationProfileOnlyWhenExplicitlyEnabled")
+}

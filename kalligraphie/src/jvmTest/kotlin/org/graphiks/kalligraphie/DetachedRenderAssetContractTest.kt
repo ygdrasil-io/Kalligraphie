@@ -1,5 +1,7 @@
 package org.graphiks.kalligraphie
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import org.graphiks.kalligraphie.api.CancellationToken
 import org.graphiks.kalligraphie.api.FontAccessRequirementsSnapshot
 import org.graphiks.kalligraphie.api.FontAssetResolverHandle
@@ -24,6 +26,93 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class DetachedRenderAssetContractTest {
+    @Test
+    fun concurrentAcquireAndResolverCloseRemainLinearizableForARealFontAsset() {
+        repeat(32) {
+            val opened = openRenderableFont(fixtureBytes(), 2048f)
+            val start = CountDownLatch(1)
+            val executor = Executors.newFixedThreadPool(2)
+            try {
+                val acquire = executor.submit<FontOperationResult<FontRenderAssetHandle>> {
+                    start.await()
+                    opened.instance.acquireRenderAsset(
+                        opened.resolver,
+                        FontRenderVariantKey.default,
+                        FontAccessRequirementsSnapshot.renderable(outlineProfile()),
+                    )
+                }
+                val close = executor.submit<FontOperationResult<Unit>> {
+                    start.await()
+                    opened.resolver.close()
+                }
+                start.countDown()
+
+                assertIs<FontOperationResult.Success<Unit>>(close.get())
+                when (val result = acquire.get()) {
+                    is FontOperationResult.Success -> {
+                        try {
+                            assertIs<GlyphRepresentation.Outline>(success(result.value.resolveGlyph(FontGlyphRequest(GlyphId(36)))))
+                        } finally {
+                            result.value.close()
+                        }
+                    }
+
+                    is FontOperationResult.Failure -> assertIs<FontError.ResourceClosed>(result.error)
+                    is FontOperationResult.Cancelled -> error("Acquiring a real asset must not be cancelled by resolver closure.")
+                }
+                assertIs<FontError.ResourceClosed>(
+                    assertIs<FontOperationResult.Failure>(
+                        opened.instance.acquireRenderAsset(
+                            opened.resolver,
+                            FontRenderVariantKey.default,
+                            FontAccessRequirementsSnapshot.renderable(outlineProfile()),
+                        ),
+                    ).error,
+                )
+            } finally {
+                executor.shutdownNow()
+                opened.asset.close()
+                opened.resolver.close()
+            }
+        }
+    }
+
+    @Test
+    fun concurrentResolveAndAssetCloseRemainLinearizableForARealFontAsset() {
+        repeat(32) {
+            val opened = openRenderableFont(fixtureBytes(), 2048f)
+            val start = CountDownLatch(1)
+            val executor = Executors.newFixedThreadPool(2)
+            try {
+                val resolve = executor.submit<FontOperationResult<GlyphRepresentation>> {
+                    start.await()
+                    opened.asset.resolveGlyph(FontGlyphRequest(GlyphId(36)), CancellationToken.none)
+                }
+                val close = executor.submit<FontOperationResult<Unit>> {
+                    start.await()
+                    opened.asset.close()
+                }
+                start.countDown()
+
+                assertIs<FontOperationResult.Success<Unit>>(close.get())
+                when (val result = resolve.get()) {
+                    is FontOperationResult.Success -> assertIs<GlyphRepresentation.Outline>(result.value)
+                    is FontOperationResult.Failure -> assertIs<FontError.ResourceClosed>(result.error)
+                    is FontOperationResult.Cancelled -> error("Resolving without a cancellation token must not be cancelled by asset closure.")
+                }
+                assertIs<FontError.ResourceClosed>(
+                    assertIs<FontOperationResult.Failure>(
+                        opened.asset.resolveGlyph(FontGlyphRequest(GlyphId(36)), CancellationToken.none),
+                    ).error,
+                )
+            } finally {
+                executor.shutdownNow()
+                opened.asset.close()
+                opened.resolver.close()
+            }
+        }
+    }
+
     @Test
     fun attachedAssetRetainsItsResourceAfterResolverClose() {
         val opened = openRenderableFont(fixtureBytes(), 2048f)

@@ -57,11 +57,11 @@ public class JvmEditableLineFacadeRequest(
     features: List<OpenTypeFeature>,
     /** Explicit vertical metrics for the horizontal line box. */
     public val verticalMetrics: LineVerticalMetrics,
-    /** Explicit layout-only or outline-certifying publication mode. */
+    /** Explicit layout-only or profile-certifying publication mode. */
     public val materialization: EditableLineMaterialization,
     /** Explicit BiDi level required only when [snapshot] is empty. */
     public val emptyLineBidiLevel: Int? = null,
-    /** Cooperative cancellation signal used only while materializing outlines. */
+    /** Cooperative cancellation signal used only while materializing glyph representations. */
     public val cancellationToken: CancellationToken = CancellationToken.none,
 ) {
     /** Immutable OpenType feature overrides applied in deterministic caller order. */
@@ -100,7 +100,7 @@ public object JvmEditableLineFacade {
      * All shaping requests explicitly receive resolved script, direction, language, UAX #9
      * level, BOT/EOT flags, baseline policy, and feature overrides. A successful line preserves
      * shaped runs and their backend identities; `RENDERABLE` publication additionally certifies
-     * every final glyph only through the requested outline profile.
+     * every final glyph through the selected certified representation profile.
      */
     public fun layout(request: JvmEditableLineFacadeRequest): EditableLineResult {
         val analysis = try {

@@ -21,6 +21,7 @@ import org.graphiks.kalligraphie.api.FontInstance
 import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontRenderAssetHandle
 import org.graphiks.kalligraphie.api.FontRenderAssetKey
+import org.graphiks.kalligraphie.api.FontRenderVariantSnapshot
 import org.graphiks.kalligraphie.api.GdefLigatureCaretState
 import org.graphiks.kalligraphie.api.GlyphId
 import org.graphiks.kalligraphie.api.GlyphMaterializationCertificate
@@ -74,7 +75,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
      * Resolves and positions one line from a captured catalogue and deterministic policy.
      *
      * The fallback resolver shapes every atomic Unicode unit with exactly one selected face and
-     * validates final outline routes before this method publishes an [EditableLineResult]. The
+     * validates final glyph-materialization routes before this method publishes an [EditableLineResult]. The
      * supplied resolver remains borrowed by the caller; all temporary assets are closed before
      * this method returns. Failure and cancellation never publish a partial line.
      */
@@ -782,11 +783,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                 placements.forEach { placement ->
                     val instance = request.fontInstances.single { it.key == placement.sourceRun.fontInstanceKey }
                     when (
-                        val acquired = instance.acquireRenderAsset(
-                            resolver = materialization.resolver,
-                            variant = materialization.variant,
-                            requirements = FontAccessRequirementsSnapshot.renderable(materialization.outlineProfile),
-                        )
+                        val acquired = instance.acquireMaterializationAsset(materialization)
                     ) {
                         is FontOperationResult.Success -> when (
                             val certified = certifyWithAsset(request, listOf(placement), instance, acquired.value, materialization)
@@ -820,19 +817,20 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
         asset: FontRenderAssetHandle,
         materialization: EditableLineMaterialization.Renderable,
     ): CertificationResult {
-        val expectedAssetKey = FontRenderAssetKey(
-            fontInstanceKey = instance.key,
-            variant = materialization.variant,
-            outlineProfile = materialization.outlineProfile,
-            generation = materialization.resolver.generation,
-        )
-        var result: CertificationResult = if (asset.key == expectedAssetKey) {
+        val expectedVariantSnapshot = asset.key.variantSnapshot ?: FontRenderVariantSnapshot.default
+        var result: CertificationResult = if (
+            asset.key.fontInstanceKey == instance.key &&
+            asset.key.variant == materialization.renderVariant.key &&
+            expectedVariantSnapshot == materialization.renderVariant &&
+            asset.key.representationProfile in materialization.requirements.acceptedProfiles &&
+            asset.key.generation == materialization.resolver.generation
+        ) {
             CertificationResult.Success(emptyMap(), emptyMap())
         } else {
             CertificationResult.Failure(
                 EditableLineError.FontMaterializationFailure(
                     org.graphiks.kalligraphie.api.FontError.InvalidFontData(
-                        "Acquired render asset key does not match the requested font instance, variant, and outline profile.",
+                        "Acquired render asset key does not match the requested font instance, visual variant, accepted representation profile, and generation.",
                     ),
                 ),
                 emptyList(),
@@ -849,11 +847,14 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                             val route = when (resolvedGlyph) {
                                 GlyphRepresentation.Empty -> GlyphMaterializationRoute.EMPTY
                                 is GlyphRepresentation.Outline -> {
-                                    if (resolvedGlyph.outline.glyphId != glyph.shapedGlyph.glyphId.value) {
+                                    if (
+                                        asset.key.representationProfile !is org.graphiks.kalligraphie.api.OutlineProfile ||
+                                        resolvedGlyph.outline.glyphId != glyph.shapedGlyph.glyphId.value
+                                    ) {
                                         result = CertificationResult.Failure(
                                             EditableLineError.FontMaterializationFailure(
                                                 org.graphiks.kalligraphie.api.FontError.InvalidFontData(
-                                                    "Resolved outline glyph identifier does not match the requested final glyph.",
+                                                    "Resolved outline route does not match the certified profile and final glyph identifier.",
                                                 ),
                                             ),
                                             emptyList(),
@@ -863,18 +864,37 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                                     GlyphMaterializationRoute.OUTLINE
                                 }
 
-                                is GlyphRepresentation.Paint,
-                                is GlyphRepresentation.Bitmap,
-                                -> {
-                                    result = CertificationResult.Failure(
-                                        EditableLineError.FontMaterializationFailure(
-                                            org.graphiks.kalligraphie.api.FontError.UnsupportedRepresentationProfile(
-                                                "An outline-only layout asset returned a non-outline glyph representation.",
+                                is GlyphRepresentation.Paint -> {
+                                    if (asset.key.representationProfile !is org.graphiks.kalligraphie.api.PaintGraphProfile) {
+                                        result = CertificationResult.Failure(
+                                            EditableLineError.FontMaterializationFailure(
+                                                org.graphiks.kalligraphie.api.FontError.InvalidFontData(
+                                                    "Resolved paint graph does not match the certified paint profile.",
+                                                ),
                                             ),
-                                        ),
-                                        emptyList(),
-                                    )
-                                    break@certification
+                                            emptyList(),
+                                        )
+                                        break@certification
+                                    }
+                                    GlyphMaterializationRoute.PAINT_GRAPH
+                                }
+
+                                is GlyphRepresentation.Bitmap -> {
+                                    if (
+                                        asset.key.representationProfile !is org.graphiks.kalligraphie.api.BitmapProfile ||
+                                        resolvedGlyph.bitmap.glyphId != glyph.shapedGlyph.glyphId
+                                    ) {
+                                        result = CertificationResult.Failure(
+                                            EditableLineError.FontMaterializationFailure(
+                                                org.graphiks.kalligraphie.api.FontError.InvalidFontData(
+                                                    "Resolved bitmap does not match the certified bitmap profile and final glyph identifier.",
+                                                ),
+                                            ),
+                                            emptyList(),
+                                        )
+                                        break@certification
+                                    }
+                                    GlyphMaterializationRoute.BITMAP
                                 }
                             }
                             certificates[GlyphPosition(placement.visualOrder, glyphIndex)] = GlyphMaterializationCertificate(
@@ -923,6 +943,23 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
         }
         return result
     }
+
+    private fun FontInstance.acquireMaterializationAsset(
+        materialization: EditableLineMaterialization.Renderable,
+    ): FontOperationResult<FontRenderAssetHandle> =
+        if (materialization.renderVariant == FontRenderVariantSnapshot.default) {
+            acquireRenderAsset(
+                resolver = materialization.resolver,
+                variant = materialization.variant,
+                requirements = materialization.requirements,
+            )
+        } else {
+            acquireRenderAsset(
+                resolver = materialization.resolver,
+                renderVariant = materialization.renderVariant,
+                requirements = materialization.requirements,
+            )
+        }
 
     private fun candidates(request: EditableLineRequest, placements: List<RunPlacement>): List<CaretCandidate> {
         val top = LayoutUnit(-request.verticalMetrics.ascent.value)

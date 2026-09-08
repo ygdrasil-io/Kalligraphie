@@ -51,13 +51,15 @@ class ParagraphLayoutContractsTest {
     fun paragraphRequestRetainsOnlyAResourceFreeMaterializationIdentity() {
         val fixture = fixture("a")
         val identity = ParagraphMaterializationIdentity.Renderable(
-            variant = FontRenderVariantKey("editor"),
-            outlineProfile = OutlineProfile(
-                maxBytes = 1_024,
-                maxContours = 16,
-                maxPoints = 64,
-                maxCompositeDepth = 4,
-                maxCompositeComponents = 8,
+            renderVariant = FontRenderVariantSnapshot(cpalPaletteIndex = 1),
+            requirements = FontAccessRequirementsSnapshot.renderable(
+                OutlineProfile(
+                    maxBytes = 1_024,
+                    maxContours = 16,
+                    maxPoints = 64,
+                    maxCompositeDepth = 4,
+                    maxCompositeComponents = 8,
+                ),
             ),
         )
 

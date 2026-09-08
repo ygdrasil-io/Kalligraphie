@@ -567,16 +567,35 @@ public enum class CoverageStatus {
  * Unlike [EditableLineMaterialization], this value never retains a borrowed resolver handle.
  */
 public sealed interface ParagraphMaterializationIdentity {
-    /** Layout geometry is produced without synchronously validating outline materialization. */
+    /** Layout geometry is produced without synchronously validating glyph materialization. */
     public data object LayoutOnly : ParagraphMaterializationIdentity
 
-    /** Exact render variant and outline profile required for synchronous final validation. */
+    /** Exact render variant and representation requirements required for synchronous final validation. */
     public data class Renderable(
-        /** Render variant that must be replayed. */
-        public val variant: FontRenderVariantKey,
-        /** Outline constraints that must be replayed. */
-        public val outlineProfile: OutlineProfile,
-    ) : ParagraphMaterializationIdentity
+        /** Complete geometry-neutral visual selection that must be replayed. */
+        public val renderVariant: FontRenderVariantSnapshot,
+        /** Ordered immutable representation requirements that must be replayed. */
+        public val requirements: FontAccessRequirementsSnapshot,
+    ) : ParagraphMaterializationIdentity {
+        /** Stable key of [renderVariant] retained for identity-oriented consumers. */
+        public val variant: FontRenderVariantKey
+            get() = renderVariant.key
+
+        init {
+            require(requirements.mode == FontAccessRequirementsSnapshot.Mode.RENDERABLE) {
+                "Renderable paragraph materialization identity requires RENDERABLE requirements."
+            }
+        }
+
+        /** Compatibility constructor for a default-variant outline-only identity. */
+        public constructor(
+            variant: FontRenderVariantKey,
+            outlineProfile: OutlineProfile,
+        ) : this(
+            renderVariant = paragraphRenderVariantSnapshot(variant),
+            requirements = FontAccessRequirementsSnapshot.renderable(outlineProfile),
+        )
+    }
 
     /** Factories that discard borrowed operational capability after capturing immutable identity. */
     public companion object {
@@ -589,6 +608,13 @@ public sealed interface ParagraphMaterializationIdentity {
         public fun from(materialization: EditableLineMaterialization): ParagraphMaterializationIdentity =
             materialization.toParagraphIdentity()
     }
+}
+
+private fun paragraphRenderVariantSnapshot(variant: FontRenderVariantKey): FontRenderVariantSnapshot {
+    require(variant == FontRenderVariantKey.default) {
+        "A non-default FontRenderVariantKey lacks the palette and foreground context required for paragraph replay."
+    }
+    return FontRenderVariantSnapshot.default
 }
 
 /**
@@ -1294,7 +1320,7 @@ private fun minParagraphIndex(first: TextIndex, second: TextIndex): TextIndex = 
 
 private fun EditableLineMaterialization.toParagraphIdentity(): ParagraphMaterializationIdentity = when (this) {
     EditableLineMaterialization.LayoutOnly -> ParagraphMaterializationIdentity.LayoutOnly
-    is EditableLineMaterialization.Renderable -> ParagraphMaterializationIdentity.Renderable(variant, outlineProfile)
+    is EditableLineMaterialization.Renderable -> ParagraphMaterializationIdentity.Renderable(renderVariant, requirements)
 }
 
 private fun hasMandatoryTerminalBreak(
