@@ -351,6 +351,24 @@ class GlyphRepresentationContractsTest {
         }
     }
 
+    @Test
+    fun portableDataRequirementsExcludeNativeProfilesFromTheNegotiationOrder() {
+        val outline = outlineProfile()
+
+        val requirements = FontAccessRequirementsSnapshot.renderable(
+            acceptedProfiles = listOf(
+                NativeHandleProfile(
+                    bridgeKind = "platform-font",
+                    bridgeVersion = "1",
+                ),
+                outline,
+            ),
+            portableDataRequired = true,
+        )
+
+        assertEquals(listOf(outline), requirements.acceptedProfiles)
+    }
+
     private fun instanceKey(): FontInstanceKey =
         FontInstanceKey(
             face = FontFaceId(

@@ -94,8 +94,17 @@ public class FontAccessRequirementsSnapshot private constructor(
     /** Whether a native-only route is forbidden for this request. */
     public val portableDataRequired: Boolean,
 ) {
-    /** Ordered immutable profiles a consumer can materialize. */
-    public val acceptedProfiles: List<GlyphRepresentationProfile> = acceptedProfiles.immutableListSnapshot()
+    /**
+     * Ordered immutable profiles eligible for materialization.
+     *
+     * Native profiles supplied alongside [portableDataRequired] are excluded before providers
+     * observe this list, so a portable-data request cannot be satisfied by a native route ahead
+     * of a portable alternative. The relative order of the remaining profiles is preserved.
+     */
+    public val acceptedProfiles: List<GlyphRepresentationProfile> =
+        acceptedProfiles
+            .filter { profile -> !portableDataRequired || profile !is NativeHandleProfile }
+            .immutableListSnapshot()
 
     /** First accepted outline profile, retained for compatibility with outline-only consumers. */
     public val outlineProfile: OutlineProfile? = this.acceptedProfiles.filterIsInstance<OutlineProfile>().firstOrNull()
