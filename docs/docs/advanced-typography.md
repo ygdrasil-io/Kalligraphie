@@ -119,6 +119,13 @@ every transform â€” kashida, hyphen substitution, tab leader, ellipsis marker â€
 against the final glyph identifier. Every published glyph carries its
 certificate and render asset key, including synthetic glyphs.
 
+Fallback validation keeps only an operation-local proof containing the asset
+key, glyph identifier, and accepted route. When all three still match after
+the transforms, certification reuses that proof instead of materializing the
+same glyph again. The proof contains neither an IR nor an asset handle, is not
+published in `EditableLine` or `TextLayout`, and is discarded when the layout
+call returns.
+
 ## Vertical writing
 
 `ParagraphConstraints.writingMode` selects physical vertical composition:

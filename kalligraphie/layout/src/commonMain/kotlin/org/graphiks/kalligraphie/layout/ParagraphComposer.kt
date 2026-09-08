@@ -176,6 +176,7 @@ public object ParagraphComposer : ParagraphLayouter {
             )
         }
         if (request.cancellationToken.isCancellationRequested()) return ParagraphCompositionResult.Cancelled()
+        val proofs = GlyphMaterializationProofs()
         val sourceClusters = request.unicodeAnalysis.graphemeClusters.filter { cluster ->
             cluster.start >= request.sourceRange.start && cluster.endExclusive <= request.sourceRange.endExclusive
         }
@@ -196,6 +197,7 @@ public object ParagraphComposer : ParagraphLayouter {
                 shapingContextRange = request.sourceRange,
                 unicodeAnalysis = provisionalAnalysis,
                 materialization = materialization,
+                proofs = proofs,
             )
         ) {
             is FontOperationResult.Success -> resolved.value.shapedRuns
@@ -244,6 +246,7 @@ public object ParagraphComposer : ParagraphLayouter {
                         sourceClusters = sourceClusters,
                         provisionalRuns = provisionalRuns,
                         materialization = materialization,
+                        proofs = proofs,
                     )
                     if (truncated != null) {
                         if (replaced != null) placed.removeAt(placed.lastIndex)
@@ -266,6 +269,7 @@ public object ParagraphComposer : ParagraphLayouter {
                     sourceClusters = sourceClusters,
                     provisionalRuns = provisionalRuns,
                     materialization = materialization,
+                    proofs = proofs,
                 )
             ) {
                 is FinalizationResult.Success -> {
@@ -278,6 +282,7 @@ public object ParagraphComposer : ParagraphLayouter {
                             sourceClusters = sourceClusters,
                             provisionalRuns = provisionalRuns,
                             materialization = materialization,
+                            proofs = proofs,
                         )
                         if (truncated != null) {
                             placed += place(truncated.line, request, blockCursor, truncated.fontInstances)
@@ -343,6 +348,7 @@ public object ParagraphComposer : ParagraphLayouter {
             )
         }
         if (request.cancellationToken.isCancellationRequested()) return ParagraphCompositionResult.Cancelled()
+        val proofs = GlyphMaterializationProofs()
         if (maximumEndExclusive != null && (
                 maximumEndExclusive <= request.sourceRange.start ||
                     maximumEndExclusive > request.sourceRange.endExclusive ||
@@ -407,6 +413,7 @@ public object ParagraphComposer : ParagraphLayouter {
                     shapingContextRange = request.sourceRange,
                     unicodeAnalysis = provisionalAnalysis,
                     materialization = materialization,
+                    proofs = proofs,
                 )
             ) {
                 is FontOperationResult.Success -> resolved.value.shapedRuns
@@ -427,6 +434,7 @@ public object ParagraphComposer : ParagraphLayouter {
                     sourceClusters = sourceClusters,
                     provisionalRuns = provisionalRuns,
                     materialization = materialization,
+                    proofs = proofs,
                 )
             ) {
                 is FinalizationResult.Success -> finalized
@@ -787,6 +795,7 @@ public object ParagraphComposer : ParagraphLayouter {
         sourceClusters: List<TextRange>,
         provisionalRuns: List<ShapedGlyphRun>,
         materialization: EditableLineMaterialization,
+        proofs: GlyphMaterializationProofs,
     ): FinalizationResult {
         require(candidates.isNotEmpty())
         candidates.asReversed().forEach { boundary ->
@@ -796,6 +805,7 @@ public object ParagraphComposer : ParagraphLayouter {
                 sourceClusters,
                 provisionalRuns,
                 materialization,
+                proofs,
             )
             when (finalized) {
                 is FinalizationResult.Success -> {
@@ -815,6 +825,7 @@ public object ParagraphComposer : ParagraphLayouter {
         sourceClusters: List<TextRange>,
         provisionalRuns: List<ShapedGlyphRun>,
         materialization: EditableLineMaterialization,
+        proofs: GlyphMaterializationProofs,
         ellipsis: LineEllipsisPolicy? = null,
     ): FinalizationResult {
         val finalAnalysis = analysisForLine(request, lineRange, resetLineTrailingWhitespace = true)
@@ -833,6 +844,7 @@ public object ParagraphComposer : ParagraphLayouter {
                     shapingContextRange = lineRange,
                     unicodeAnalysis = finalAnalysis,
                     materialization = materialization,
+                    proofs = proofs,
                 )
             ) {
                 is FontOperationResult.Success -> {
@@ -860,6 +872,7 @@ public object ParagraphComposer : ParagraphLayouter {
                 fontInstances = uniqueInstances,
                 diagnostics = diagnostics,
                 materialization = materialization,
+                proofs = proofs,
                 ellipsis = ellipsis,
             )
         }
@@ -883,6 +896,7 @@ public object ParagraphComposer : ParagraphLayouter {
                     inlineObjects = request.inlineObjects,
                     cancellationToken = request.cancellationToken,
                 ),
+                proofs,
             )
         ) {
             is EditableLineResult.Success -> FinalizationResult.Success(
@@ -920,6 +934,7 @@ public object ParagraphComposer : ParagraphLayouter {
         fontInstances: List<FontInstance>,
         diagnostics: List<EditableLineDiagnostic>,
         materialization: EditableLineMaterialization,
+        proofs: GlyphMaterializationProofs,
         ellipsis: LineEllipsisPolicy?,
     ): FinalizationResult {
         val instancesByKey = fontInstances.associateBy(FontInstance::key)
@@ -997,6 +1012,7 @@ public object ParagraphComposer : ParagraphLayouter {
                     inlineObjects = request.inlineObjects,
                     cancellationToken = request.cancellationToken,
                 ),
+                proofs,
             )
         ) {
             is EditableLineResult.Success -> FinalizationResult.Success(
@@ -1479,6 +1495,7 @@ public object ParagraphComposer : ParagraphLayouter {
         sourceClusters: List<TextRange>,
         provisionalRuns: List<ShapedGlyphRun>,
         materialization: EditableLineMaterialization,
+        proofs: GlyphMaterializationProofs,
     ): TruncatedLine? {
         val ellipsis = request.overflowPolicy as? OverflowPolicy.Ellipsis ?: return null
         val terminal = request.sourceRange.endExclusive
@@ -1488,7 +1505,7 @@ public object ParagraphComposer : ParagraphLayouter {
         val measureBoundaries = (sourceClusters.map { it.endExclusive } + lineStart).distinct().sortedWith(TextIndex::compareTo)
             .filter { boundary -> boundary > lineStart && boundary <= terminal }
         measureBoundaries.asReversed().forEach { boundary ->
-            when (val finalized = finalizeLine(request, TextRange(lineStart, boundary), sourceClusters, provisionalRuns, materialization)) {
+            when (val finalized = finalizeLine(request, TextRange(lineStart, boundary), sourceClusters, provisionalRuns, materialization, proofs)) {
                 is FinalizationResult.Success -> {
                     prefixWidths[boundary] = inlineAdvance(finalized.line).value.toDouble()
                     prefixInstances[boundary] = finalized.fontInstances
@@ -1506,6 +1523,7 @@ public object ParagraphComposer : ParagraphLayouter {
                 sourceClusters,
                 provisionalRuns,
                 materialization,
+                proofs,
                 completeRange,
                 completeRange,
                 side,
@@ -1519,7 +1537,7 @@ public object ParagraphComposer : ParagraphLayouter {
                     val prefixWidth = prefixWidths[boundary] ?: return@firstOrNull false
                     prefixWidth + markerWidth <= width
                 } ?: lineStart.takeIf { markerWidth <= width } ?: return null
-                truncateWithPolicy(request, sourceClusters, provisionalRuns, materialization,
+                truncateWithPolicy(request, sourceClusters, provisionalRuns, materialization, proofs,
                     completeRange, TextRange(b0, terminal), side)
             }
             EllipsisSide.INLINE_START -> {
@@ -1539,7 +1557,7 @@ public object ParagraphComposer : ParagraphLayouter {
                     }
                 }
                 if (!suffixFound) return markerOnly()
-                truncateWithPolicy(request, sourceClusters, provisionalRuns, materialization,
+                truncateWithPolicy(request, sourceClusters, provisionalRuns, materialization, proofs,
                     completeRange, TextRange(lineStart, chosen.start), side)
             }
             EllipsisSide.MIDDLE -> {
@@ -1561,7 +1579,7 @@ public object ParagraphComposer : ParagraphLayouter {
                     .lastOrNull { (_, w) -> w + markerWidth + suffixWidth <= width }?.key
                     ?: lineStart.takeIf { markerWidth + suffixWidth <= width }
                     ?: return markerOnly()
-                truncateWithPolicy(request, sourceClusters, provisionalRuns, materialization,
+                truncateWithPolicy(request, sourceClusters, provisionalRuns, materialization, proofs,
                     completeRange, TextRange(b0, startB0), side)
             }
         }
@@ -1572,6 +1590,7 @@ public object ParagraphComposer : ParagraphLayouter {
         sourceClusters: List<TextRange>,
         provisionalRuns: List<ShapedGlyphRun>,
         materialization: EditableLineMaterialization,
+        proofs: GlyphMaterializationProofs,
         lineRange: TextRange,
         hiddenRange: TextRange,
         side: EllipsisSide,
@@ -1582,6 +1601,7 @@ public object ParagraphComposer : ParagraphLayouter {
             sourceClusters = sourceClusters,
             provisionalRuns = provisionalRuns,
             materialization = materialization,
+            proofs = proofs,
             ellipsis = LineEllipsisPolicy(side, hiddenRange),
         )
         return when (finalized) {
