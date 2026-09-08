@@ -27,5 +27,10 @@ L'oracle a été extrait avant l'ajout du test par un lecteur structural Python
   `(232,232,231,255)`.
 
 Les données sont recoupées avec les tables publiées dans la révision figée de
-Google Fonts. Une validation humaine explicite de cet oracle reste requise
-avant toute publication qui revendiquerait cette validation.
+Google Fonts.
+
+## Validation humaine
+
+Un mainteneur a vérifié la provenance, la licence, l’empreinte et l’oracle
+attendu de cette fixture, puis a validé son utilisation comme référence de
+test. Cette revue est indépendante de l’implémentation Kalligraphie.

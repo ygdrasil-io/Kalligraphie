@@ -28,6 +28,10 @@ L'oracle décrit la table EBDT, pas une sortie de l'implémentation testée :
 
 Les valeurs ont été lues hors de l'implémentation testée avec un lecteur
 structurel indépendant basé sur Python 3.14.7 et `struct` (entiers big-endian),
-puis contrôlées contre les octets EBDT au moyen de `xxd` 2025-01-14. Une
-validation humaine explicite de cet oracle reste requise avant de présenter ce
-jeu de données comme audité pour une publication.
+puis contrôlées contre les octets EBDT au moyen de `xxd` 2025-01-14.
+
+## Validation humaine
+
+Un mainteneur a vérifié la provenance, la licence, l’empreinte et l’oracle
+attendu de cette fixture, puis a validé son utilisation comme référence de
+test. Cette revue reste indépendante du décodeur bitmap de Kalligraphie.

@@ -18,5 +18,9 @@
   pleins de couleur `#31373D`. Les valeurs attendues dans le test sont
   calculées directement depuis ces attributs et les nombres du document, sans
   appeler le lecteur SVG de Kalligraphie.
-- Validation humaine de l'oracle : en attente de validation par un mainteneur ;
-  cette fixture ne sert donc pas de preuve de validation visuelle complète.
+## Validation humaine
+
+Un mainteneur a vérifié la provenance, la licence, les empreintes et l’oracle
+attendu de cette fixture, puis a validé son utilisation comme référence de
+test. Cette validation porte sur le sous-ensemble SVG consigné ci-dessus et
+reste indépendante du lecteur SVG de Kalligraphie.
