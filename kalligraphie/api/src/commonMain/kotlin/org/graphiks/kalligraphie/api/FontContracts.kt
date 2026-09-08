@@ -196,8 +196,9 @@ public sealed interface GlyphRepresentationProfile {
  * Explicit permission to borrow one platform-native materialization route.
  *
  * This profile carries only stable bridge metadata; it never exposes a platform object from the
- * common API. It is incompatible with [FontAccessRequirementsSnapshot.portableDataRequired]
- * when it is the only accepted profile.
+ * common API. A request with [FontAccessRequirementsSnapshot.portableDataRequired] removes every
+ * native profile before provider negotiation, so a native-only list becomes invalid and native
+ * profiles never take precedence over portable alternatives.
  */
 public data class NativeHandleProfile(
     /** Stable kind of the platform bridge, such as a platform-font bridge. */
