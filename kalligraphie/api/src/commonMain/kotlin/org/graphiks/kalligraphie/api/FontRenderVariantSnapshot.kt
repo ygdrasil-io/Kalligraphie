@@ -44,14 +44,19 @@ public data class FontRenderVariantSnapshot(
     }
 
     /** Canonical key for this geometry-neutral selection. */
-    public val key: FontRenderVariantKey = FontRenderVariantKey(
-        buildString {
-            append("cpal:")
-            append(cpalPaletteIndex ?: "default")
-            append(";foreground:")
-            foregroundColor?.let { color -> append("${color.red},${color.green},${color.blue},${color.alpha}") } ?: append("none")
-        },
-    )
+    public val key: FontRenderVariantKey =
+        if (cpalPaletteIndex == null && foregroundColor == null) {
+            FontRenderVariantKey.default
+        } else {
+            FontRenderVariantKey(
+                buildString {
+                    append("cpal:")
+                    append(cpalPaletteIndex ?: "default")
+                    append(";foreground:")
+                    foregroundColor?.let { color -> append("${color.red},${color.green},${color.blue},${color.alpha}") } ?: append("none")
+                },
+            )
+        }
 
     /** Default visual selection with no explicit palette or foreground color. */
     public companion object {

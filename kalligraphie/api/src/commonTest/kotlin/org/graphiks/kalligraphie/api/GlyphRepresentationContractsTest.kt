@@ -28,6 +28,7 @@ class GlyphRepresentationContractsTest {
             acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE, GlyphPaintNodeKind.GROUP),
             acceptedCompositionModes = emptyList(),
             limits = PaintGraphLimits(maxNodes = 4, maxReferences = 4, maxDepth = 4),
+            outlineProfile = outlineProfile(),
         )
 
         assertEquals(false, profile.accepts(paint))
@@ -85,6 +86,7 @@ class GlyphRepresentationContractsTest {
     @Test
     fun representationKeysKeepPaletteVariantsInSeparateCacheDomains() {
         val profile = outlineProfile()
+        val paletteVariant = FontRenderVariantSnapshot(cpalPaletteIndex = 1)
         val assetKey = FontRenderAssetKey(
             fontInstanceKey = instanceKey(),
             variant = FontRenderVariantKey.default,
@@ -99,13 +101,37 @@ class GlyphRepresentationContractsTest {
             profile = GlyphRepresentationProfileKey.outline(profile),
         )
         val paletteKey = GlyphRepresentationKey(
-            assetKey = assetKey.copy(variant = FontRenderVariantKey("cpal:1")),
+            assetKey = assetKey.copy(
+                variant = paletteVariant.key,
+                variantSnapshot = paletteVariant,
+            ),
             glyphId = GlyphId(12),
-            variant = FontRenderVariantKey("cpal:1"),
+            variant = paletteVariant.key,
             profile = GlyphRepresentationProfileKey.outline(profile),
         )
 
         assertNotEquals(defaultKey, paletteKey)
+    }
+
+    @Test
+    fun renderAssetIdentityCannotCrossRepresentationProfiles() {
+        val outline = outlineProfile()
+        val paint = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE),
+            acceptedCompositionModes = emptyList(),
+            limits = PaintGraphLimits(maxNodes = 4, maxReferences = 0, maxDepth = 1),
+            outlineProfile = outline,
+        )
+        val generation = FontCatalogGeneration(FontProviderId("embedded"), "generation-1")
+        val outlineKey = FontRenderAssetKey(instanceKey(), FontRenderVariantKey.default, outline, generation)
+        val paintKey = FontRenderAssetKey(
+            fontInstanceKey = instanceKey(),
+            variant = FontRenderVariantKey.default,
+            representationProfile = paint,
+            generation = generation,
+        )
+
+        assertNotEquals(outlineKey, paintKey)
     }
 
     @Test
@@ -144,6 +170,162 @@ class GlyphRepresentationContractsTest {
         )
 
         assertFalse(certificate.matches(assetKey, GlyphId(13)))
+    }
+
+    @Test
+    fun certificateRejectsARouteThatDoesNotMatchItsAssetProfile() {
+        val paintProfile = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE),
+            acceptedCompositionModes = emptyList(),
+            limits = PaintGraphLimits(maxNodes = 1, maxReferences = 0, maxDepth = 1),
+            outlineProfile = outlineProfile(),
+        )
+        val assetKey = FontRenderAssetKey(
+            fontInstanceKey = instanceKey(),
+            variant = FontRenderVariantKey.default,
+            representationProfile = paintProfile,
+            generation = FontCatalogGeneration(FontProviderId("embedded"), "generation-1"),
+        )
+
+        assertFailsWith<IllegalArgumentException> {
+            GlyphMaterializationCertificate(
+                assetKey = assetKey,
+                glyphId = GlyphId(12),
+                route = GlyphMaterializationRoute.OUTLINE,
+            )
+        }
+    }
+
+    @Test
+    fun paintProfileRejectsAnOutlineThatExceedsItsNestedOutlineLimits() {
+        val outline = GlyphOutlineIR(
+            glyphId = 12,
+            unitsPerEm = 1_000,
+            bounds = DesignBounds.empty,
+            commands = listOf(
+                GlyphOutlineIR.Command.MoveTo(0, 0),
+                GlyphOutlineIR.Command.Close,
+                GlyphOutlineIR.Command.MoveTo(1, 1),
+                GlyphOutlineIR.Command.Close,
+            ),
+        )
+        val profile = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE),
+            acceptedCompositionModes = emptyList(),
+            limits = PaintGraphLimits(maxNodes = 1, maxReferences = 0, maxDepth = 1),
+            outlineProfile = OutlineProfile(
+                maxBytes = Int.MAX_VALUE,
+                maxContours = 1,
+                maxPoints = 2,
+                maxCompositeDepth = 1,
+                maxCompositeComponents = 1,
+            ),
+        )
+        val paint = GlyphPaintIR(
+            schemaVersion = 1,
+            rootNode = 0,
+            nodes = listOf(GlyphPaintNode.SolidOutline(outline, GlyphColor(0, 0, 0))),
+        )
+
+        assertFalse(profile.accepts(paint))
+    }
+
+    @Test
+    fun paintProfileRejectsADeepAcyclicGraphWithoutExhaustingTheCallStack() {
+        val nodeCount = 20_000
+        val outline = GlyphOutlineIR(
+            glyphId = 12,
+            unitsPerEm = 1_000,
+            bounds = DesignBounds.empty,
+            commands = emptyList(),
+        )
+        val paint = GlyphPaintIR(
+            schemaVersion = 1,
+            rootNode = 0,
+            nodes = List(nodeCount) { index ->
+                if (index == nodeCount - 1) {
+                    GlyphPaintNode.SolidOutline(outline, GlyphColor(0, 0, 0))
+                } else {
+                    GlyphPaintNode.Group(children = listOf(index + 1))
+                }
+            },
+        )
+        val profile = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE, GlyphPaintNodeKind.GROUP),
+            acceptedCompositionModes = listOf(GlyphPaintCompositionMode.SOURCE_OVER),
+            limits = PaintGraphLimits(maxNodes = nodeCount, maxReferences = nodeCount, maxDepth = 1),
+            outlineProfile = outlineProfile(),
+        )
+
+        assertFalse(profile.accepts(paint))
+    }
+
+    @Test
+    fun profileKeyFactoriesEncodeEveryPaintAndBitmapRequirement() {
+        val paint = PaintGraphProfile(
+            acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE, GlyphPaintNodeKind.GROUP),
+            acceptedCompositionModes = listOf(GlyphPaintCompositionMode.SOURCE_OVER),
+            limits = PaintGraphLimits(
+                maxNodes = 3,
+                maxReferences = 2,
+                maxDepth = 2,
+                maxSourceBytes = 10,
+                maxPaths = 1,
+                maxGradients = 0,
+                maxPalettes = 2,
+                maxPaletteEntries = 3,
+                maxColorRecords = 4,
+                maxDecodedPaletteBytes = 5,
+                maxBaseGlyphRecords = 6,
+                maxLayerRecords = 7,
+                maxSvgDocuments = 8,
+                maxSvgTransformOperations = 9,
+            ),
+            outlineProfile = outlineProfile(),
+        )
+        val bitmap = BitmapProfile(
+            strike = BitmapStrike(16, 17),
+            acceptedPixelFormats = listOf(BitmapPixelFormat.ALPHA_8),
+            acceptedColorSpaces = listOf(GlyphColorSpace.SRGB),
+            limits = BitmapLimits(
+                maxStrikes = 1,
+                maxIndexSubtables = 7,
+                maxRecordCount = 8,
+                maxIndexTableBytes = 9,
+                maxBitmapTableBytes = 10,
+                maxWidth = 2,
+                maxHeight = 3,
+                maxPixels = 4,
+                maxCompressedBytes = 5,
+                maxTotalCompressedBytes = 11,
+                maxDecodedBytes = 6,
+                maxTotalDecodedBytes = 12,
+            ),
+        )
+
+        assertEquals(
+            "nodes=SOLID_OUTLINE,GROUP;composition=SOURCE_OVER;limits=3,2,2,10,1,0,2,3,4,5,6,7,8,9;outline=1,1024,32,128,8,32",
+            GlyphRepresentationProfileKey.paintGraph(paint).parameters,
+        )
+        assertEquals(
+            "strike=16,17;pixels=ALPHA_8;colors=SRGB;limits=1,7,8,9,10,2,3,4,5,11,6,12",
+            GlyphRepresentationProfileKey.bitmap(bitmap).parameters,
+        )
+        val changedOutlineSchema = PaintGraphProfile(
+            acceptedNodeKinds = paint.acceptedNodeKinds,
+            acceptedCompositionModes = paint.acceptedCompositionModes,
+            limits = paint.limits,
+            outlineProfile = paint.outlineProfile.copy(schemaVersion = 2),
+        )
+
+        assertNotEquals(
+            GlyphRepresentationProfileKey.paintGraph(paint),
+            GlyphRepresentationProfileKey.paintGraph(changedOutlineSchema),
+        )
+        assertNotEquals(
+            GlyphRepresentationProfileKey.nativeHandle(NativeHandleProfile(bridgeKind = "a:b", bridgeVersion = "c")),
+            GlyphRepresentationProfileKey.nativeHandle(NativeHandleProfile(bridgeKind = "a", bridgeVersion = "b:c")),
+        )
     }
 
     @Test

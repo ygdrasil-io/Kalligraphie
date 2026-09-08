@@ -20,7 +20,7 @@ import org.graphiks.kalligraphie.api.toDiagnostic
  * been validated.
  */
 public object SfntReader {
-    private val requiredTables = setOf("head", "maxp", "name", "cmap", "hhea", "hmtx", "loca", "glyf")
+    private val requiredTables = setOf("head", "maxp", "name", "cmap", "hhea", "hmtx")
 
     /**
      * Parses table records and face metadata from [source].
@@ -95,11 +95,13 @@ public object SfntReader {
             if (record.length == 0L) {
                 return failure(FontError.MissingRequiredTable(tag, "Required table $tag has zero length."))
             }
+        }
+        for (record in records.values) {
             if (checkedRangeEnd(record.offset, record.length, bytes.size) == null) {
                 return failure(
                     FontError.OutOfBounds(
-                        message = "Table $tag exceeds source length.",
-                        location = FontDiagnosticLocation.Table(tag),
+                        message = "Table ${record.tag} exceeds source length.",
+                        location = FontDiagnosticLocation.Table(record.tag),
                     ),
                     FontDiagnosticData(
                         offset = record.offset,

@@ -45,6 +45,16 @@ public sealed interface GlyphPaintNode {
         override val children: List<Int> = emptyList()
     }
 
+    /** Paints one resolved portable path with a solid color. */
+    public data class Path(
+        /** Path geometry to paint. */
+        public val path: GlyphPaintPath,
+        /** Color applied to the path. */
+        public val color: GlyphColor,
+    ) : GlyphPaintNode {
+        override val children: List<Int> = emptyList()
+    }
+
     /** Groups child nodes in source order with one explicitly declared composition operation. */
     public class Group(
         children: List<Int>,
@@ -96,19 +106,34 @@ public class GlyphPaintIR(
     }
 
     private fun validateAcyclic() {
-        val visiting = BooleanArray(nodes.size)
-        val visited = BooleanArray(nodes.size)
+        val state = ByteArray(nodes.size)
+        val nextChild = IntArray(nodes.size)
+        val stack = ArrayDeque<Int>()
 
-        fun visit(index: Int) {
-            require(!visiting[index]) { "Paint graph contains a reference cycle." }
-            if (visited[index]) return
-            visiting[index] = true
-            nodes[index].children.forEach(::visit)
-            visiting[index] = false
-            visited[index] = true
+        nodes.indices.forEach { start ->
+            if (state[start] != UNVISITED) return@forEach
+            state[start] = VISITING
+            stack.addLast(start)
+            while (stack.isNotEmpty()) {
+                val current = stack.last()
+                val children = nodes[current].children
+                val childIndex = nextChild[current]
+                if (childIndex == children.size) {
+                    state[current] = VISITED
+                    stack.removeLast()
+                    continue
+                }
+                nextChild[current] = childIndex + 1
+                val child = children[childIndex]
+                when (state[child]) {
+                    UNVISITED -> {
+                        state[child] = VISITING
+                        stack.addLast(child)
+                    }
+                    VISITING -> require(false) { "Paint graph contains a reference cycle." }
+                }
+            }
         }
-
-        nodes.indices.forEach(::visit)
     }
 
     override fun equals(other: Any?): Boolean =
@@ -118,3 +143,7 @@ public class GlyphPaintIR(
 
     override fun toString(): String = "GlyphPaintIR(schemaVersion=$schemaVersion, rootNode=$rootNode, nodes=$nodes)"
 }
+
+private const val UNVISITED: Byte = 0
+private const val VISITING: Byte = 1
+private const val VISITED: Byte = 2

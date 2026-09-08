@@ -244,12 +244,21 @@ public enum class GlyphMaterializationRoute {
     /** The final glyph was validated as an outline accepted by the requested profile. */
     OUTLINE,
 
+    /** The final glyph was validated as a complete portable paint graph. */
+    PAINT_GRAPH,
+
+    /** The final glyph was validated as decoded portable bitmap pixels. */
+    BITMAP,
+
+    /** The final glyph was validated for an explicitly negotiated native bridge. */
+    NATIVE_HANDLE,
+
     /** The final glyph was validated as a glyph without ink. */
     EMPTY,
 }
 
 /**
- * Immutable record that one final positioned glyph passed the requested outline route.
+ * Immutable record that one final positioned glyph passed one exact materialization route.
  *
  * A certificate contains no render asset, outline payload, native handle, or borrowed resource.
  * Its validity is limited to the exact [assetKey] and [glyphId] synchronously inspected while
@@ -257,13 +266,37 @@ public enum class GlyphMaterializationRoute {
  * constructor is not a cryptographic authenticity mechanism for manually constructed values.
  */
 public data class GlyphMaterializationCertificate(
-    /** Exact font instance, variant, and outline profile used for validation. */
+    /** Exact font instance, variant, and representation profile used for validation. */
     public val assetKey: FontRenderAssetKey,
     /** Final glyph identifier whose route was validated. */
     public val glyphId: GlyphId,
     /** Successfully validated route. */
     public val route: GlyphMaterializationRoute,
+    /** Version of the selected representation-profile schema. */
+    public val representationSchemaVersion: Int = assetKey.representationProfile.schemaVersion,
 ) {
+    init {
+        require(representationSchemaVersion > 0) { "representationSchemaVersion must be positive." }
+        require(representationSchemaVersion == assetKey.representationProfile.schemaVersion) {
+            "Certificate schema version must match its asset profile."
+        }
+        when (route) {
+            GlyphMaterializationRoute.OUTLINE -> require(assetKey.representationProfile is OutlineProfile) {
+                "An outline certificate requires an outline profile."
+            }
+            GlyphMaterializationRoute.PAINT_GRAPH -> require(assetKey.representationProfile is PaintGraphProfile) {
+                "A paint-graph certificate requires a paint-graph profile."
+            }
+            GlyphMaterializationRoute.BITMAP -> require(assetKey.representationProfile is BitmapProfile) {
+                "A bitmap certificate requires a bitmap profile."
+            }
+            GlyphMaterializationRoute.NATIVE_HANDLE -> require(assetKey.representationProfile is NativeHandleProfile) {
+                "A native-handle certificate requires a native-handle profile."
+            }
+            GlyphMaterializationRoute.EMPTY -> Unit
+        }
+    }
+
     /**
      * Returns whether this certificate still covers [candidateGlyphId] from [candidateAssetKey].
      *
@@ -296,7 +329,7 @@ public class PositionedGlyph(
     public val transform: LayoutAffineTransform = LayoutAffineTransform.identity,
     /** Exact render asset key in renderable mode, or `null` in layout-only mode. */
     public val renderAssetKey: FontRenderAssetKey?,
-    /** Trusted outline-route validation record in renderable mode, or `null` in layout-only mode. */
+    /** Trusted representation-route validation record in renderable mode, or `null` in layout-only mode. */
     public val materializationCertificate: GlyphMaterializationCertificate?,
     /**
      * Typed provenance of this final glyph.

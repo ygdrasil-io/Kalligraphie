@@ -6,8 +6,7 @@ machine virtuelle Java (JVM). Les contrats publics restent portables, mais
 cette prise en charge exécutable est limitée à la JVM. L’utilisateur de la
 bibliothèque fournit des octets SFNT capturés à `Kalligraphie.embedded(...)`,
 sélectionne un enregistrement de face stable, crée une instance de fonte, puis utilise une
-ressource de rendu pour matérialiser les contours décrits par
-`GlyphOutlineIR`.
+ressource de rendu pour matérialiser une représentation portable de glyphe.
 
 Le périmètre fonctionnel supporté est volontairement étroit :
 
@@ -16,9 +15,25 @@ Le périmètre fonctionnel supporté est volontairement étroit :
 - des sources OpenType embarquées, avec l’index de face `0` pour chaque source ;
 - `LAYOUT_ONLY` pour la table `cmap` (correspondance entre caractères et
   glyphes) et les métriques ;
-- `RENDERABLE` uniquement avec la version `1` du schéma `OutlineProfile` ;
-- contours de glyphes exprimés en unités de conception (unités internes de la
+- `RENDERABLE` avec un `OutlineProfile`, un `PaintGraphProfile` ou un
+  `BitmapProfile` de version de schéma `1`, si la face sélectionnée déclare la
+  route correspondante ;
+- contours `glyf` exprimés en unités de conception (unités internes de la
   fonte), avec des métriques mises à l’échelle séparément en `LayoutUnit` ;
+- graphes de peinture COLR version 0 et CPAL version 0, composés de contours
+  pleins, de groupes ordonnés, d’une sélection exacte de palette CPAL et d’une
+  couleur de premier plan explicite ;
+- table SVG-in-OpenType version 0 avec documents UTF-8 bruts uniquement :
+  éléments `svg` et `g` non auto-fermants, et éléments `path` auto-fermants ;
+  transformations `translate` et `scale` ; commandes de chemin `M`, `L`, `H`,
+  `V`, `C`, `S` et `Z` ; remplissages opaques `#RRGGBB`, ou `fill="none"` pour
+  un chemin explicitement sans encre. Les scripts, ressources externes, entités,
+  animations, compression, gradients, clips (découpes), masques, contours tracés et
+  attributs non déclarés sont refusés avant publication d’une ressource ;
+- strikes bitmap (images matricielles, tailles bitmap exactes) EBLC version 2 / EBDT version 2,
+  avec sous-table d’index format 1 et image format 1 uniquement : alpha un bit
+  aligné sur les octets, décodé en `ALPHA_8` sRGB, pour un strike demandé à
+  l’identique ;
 - ressources de rendu détachées qui restent utilisables après la fermeture du
   gestionnaire propriétaire ou de la ressource attachée.
 
@@ -29,16 +44,49 @@ val size = FontInstanceDescriptor(LayoutUnit(2048f))
 val requirements = FontAccessRequirementsSnapshot.renderable(outlineProfile)
 ```
 
-L’accès aux glyphes pour le rendu exige un profil de contour explicite. Fermer
+L’accès aux glyphes pour le rendu exige un profil de représentation explicite. Fermer
 un gestionnaire de ressources ou une ressource de rendu est idempotent (répéter
 la fermeture produit le même résultat). Les nouvelles acquisitions après
 fermeture renvoient `font.resource-closed` ; une ressource détachée conserve les
 données immuables requises par `resolveGlyph(...)`.
 
-Hors périmètre : TTC/OTC, CFF/CFF2, variations, styles synthétiques, COLR, SVG,
-glyphes sous forme d’images matricielles, fontes système, ajustement des
-contours aux pixels (hinting), rastérisation, moteurs natifs de gestion des
-fontes et descripteurs de fonte propres à la plateforme.
+### Rétention bornée des représentations
+
+`FontMaterializationCachePolicy` peut conserver les résultats complets, immuables et portables
+des contours, graphes de peinture et pixels bitmap décodés d’une face capturée dans un cache
+(mémoire temporaire). La politique est désactivée
+par défaut ; elle peut être passée à `Kalligraphie.embedded(...)` ou à
+`MacosSystemFontCatalogOptions`. Son budget en octets est uniquement une politique de coût : il
+ne modifie ni la sélection de route, ni une clé de représentation, un certificat, un diagnostic
+ou le résultat d’un glyphe. Les entrées sont limitées à une face et à une génération de provider
+(fournisseur), pondérées par les données de contour et de peinture normalisées ainsi que les
+pixels bitmap décodés retenus, puis évincées selon
+LRU (least recently used, moins récemment utilisé). L’annulation et les erreurs opérationnelles
+ne sont jamais conservées ; un résultat plus grand que le budget est retourné normalement sans
+être conservé. Aucune entrée du cache ne retient de gestionnaire, de ressource de rendu, de
+catalogue ni de ressource native.
+
+```kotlin
+val cachePolicy = FontMaterializationCachePolicy(maxEvictableBytesPerFace = 4L * 1024L * 1024L)
+val catalogResult = Kalligraphie.embedded(bytes, provenance, cachePolicy)
+```
+
+Le cache est libéré après la fermeture du dernier gestionnaire ou de la dernière ressource de
+rendu utilisant cette face. Une ressource détachée conserve son lease (droit d’usage temporaire)
+ordinaire : le détachement ne modifie donc pas une opération déjà admise et n’expose pas une
+entrée de cache fermée.
+
+Sur macOS, l’artefact JVM expose aussi `MacosSystemFontCatalog.open()`. Il
+capture, sous limites, les fichiers `.ttf` réguliers dans un instantané
+portable et utilise les mêmes routes que les fontes embarquées. Il n’expose pas
+de handle (poignée) CoreText et ne déclare pas de prise en charge de `.otf` ni
+de `.ttc`.
+
+Hors périmètre : TTC/OTC, CFF/CFF2, variations, styles synthétiques, versions
+de COLR autres que 0, contenu SVG hors du sous-ensemble déclaré, codecs et
+formats bitmap autres que la route EBLC/EBDT déclarée, ajustement des contours
+aux pixels (hinting), rastérisation, moteurs natifs de gestion des fontes et
+descripteurs de fonte propres à la plateforme.
 
 ## Lignes Unicode éditables exactes
 
