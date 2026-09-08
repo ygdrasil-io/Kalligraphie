@@ -51,6 +51,7 @@ import org.graphiks.kalligraphie.font.sfnt.slice
 private const val GLYF_OUTLINE_ROUTE_PARAMETERS: String = "glyf-outline-v1"
 private const val COLR_CPAL_V0_ROUTE_PARAMETERS: String = "colr-v0;cpal-v0"
 private const val SVG_OPEN_TYPE_V0_ROUTE_PARAMETERS: String = "svg-opentype-v0"
+private const val SVG_COLR_CPAL_V0_FALLBACK_ROUTE_PARAMETERS: String = "svg-opentype-v0;colr-v0;cpal-v0-fallback"
 private const val SVG_GLYF_OUTLINE_FALLBACK_ROUTE_PARAMETERS: String = "svg-opentype-v0;glyf-outline-fallback-v1"
 private const val EBDT_FORMAT_ONE_ROUTE_PARAMETERS: String = "eblc-v2;ebdt-v2;index-format-1;image-format-1"
 
@@ -215,48 +216,75 @@ internal data class TrueTypeFontInstance(
                 is PaintGraphProfile -> {
                     if (profile.schemaVersion != 1) {
                         failure(FontError.UnsupportedRepresentationProfile("Only paint-graph schema version 1 is supported.", FontDiagnosticLocation.FaceId(faceId)))
-                    } else if (svgRouteSupported) {
-                        if (renderVariant != FontRenderVariantSnapshot.default) {
-                            failure(
-                                FontError.UnsupportedRepresentationProfile(
-                                    "SVG-in-OpenType paint assets accept only the default render variant.",
-                                    FontDiagnosticLocation.FaceId(faceId),
-                                ),
-                            )
-                        } else {
-                            when (val svgData = readSvgOpenType(profile)) {
-                                is FontOperationResult.Success -> FontOperationResult.Success(
-                                    SvgOpenTypeRenderAssetHandle(
-                                        faceId = faceId,
-                                        resourceLease = lease,
-                                        key = FontRenderAssetKey(
-                                            fontInstanceKey = key,
-                                            variant = renderVariant.key,
-                                            representationProfile = profile,
-                                            generation = resolver.generation,
-                                        ),
-                                        profile = profile,
-                                        svgData = svgData.value,
-                                        glyphCount = parsedFont.metadata.glyphCount,
-                                    ),
-                                )
-
-                                is FontOperationResult.Failure -> svgData
-                                is FontOperationResult.Cancelled -> svgData
-                            }
-                        }
                     } else {
-                        when (val colorData = readColrCpalV0(profile)) {
-                            is FontOperationResult.Success -> {
-                                val paletteIndex = renderVariant.cpalPaletteIndex ?: 0
-                                if (paletteIndex !in 0 until colorData.value.paletteCount) {
+                        when (val colorData = if (paintGraphSupported) readColrCpalV0(profile) else null) {
+                            is FontOperationResult.Failure -> colorData
+                            is FontOperationResult.Cancelled -> colorData
+                            is FontOperationResult.Success,
+                            null,
+                            -> {
+                                val resolvedColorData = colorData?.value
+                                if (svgRouteSupported) {
+                                    if (resolvedColorData == null && renderVariant != FontRenderVariantSnapshot.default) {
+                                        failure(
+                                            FontError.UnsupportedRepresentationProfile(
+                                                "SVG-in-OpenType paint assets without COLR fallback accept only the default render variant.",
+                                                FontDiagnosticLocation.FaceId(faceId),
+                                            ),
+                                        )
+                                    } else {
+                                        val paletteIndex = renderVariant.cpalPaletteIndex ?: 0
+                                        if (resolvedColorData != null && paletteIndex !in 0 until resolvedColorData.paletteCount) {
+                                            failure(
+                                                FontError.UnsupportedRepresentationProfile(
+                                                    "The selected CPAL palette is unavailable in this font.",
+                                                    FontDiagnosticLocation.FaceId(faceId),
+                                                ),
+                                            )
+                                        } else {
+                                            when (val svgData = readSvgOpenType(profile)) {
+                                                is FontOperationResult.Success -> FontOperationResult.Success(
+                                                    SvgOpenTypeRenderAssetHandle(
+                                                        faceId = faceId,
+                                                        resourceLease = lease,
+                                                        key = FontRenderAssetKey(
+                                                            fontInstanceKey = key,
+                                                            variant = renderVariant.key,
+                                                            representationProfile = profile,
+                                                            generation = resolver.generation,
+                                                            variantSnapshot = renderVariant.takeUnless { it == FontRenderVariantSnapshot.default },
+                                                        ),
+                                                        profile = profile,
+                                                        svgData = svgData.value,
+                                                        glyphCount = parsedFont.metadata.glyphCount,
+                                                        colorData = resolvedColorData,
+                                                        paletteIndex = resolvedColorData?.let { paletteIndex },
+                                                        foregroundColor = renderVariant.foregroundColor ?: GlyphColor(0, 0, 0),
+                                                    ),
+                                                )
+
+                                                is FontOperationResult.Failure -> svgData
+                                                is FontOperationResult.Cancelled -> svgData
+                                            }
+                                        }
+                                    }
+                                } else if (resolvedColorData == null) {
                                     failure(
                                         FontError.UnsupportedRepresentationProfile(
-                                            "The selected CPAL palette is unavailable in this font.",
+                                            "The font has no supported COLR/CPAL or SVG-in-OpenType paint route.",
                                             FontDiagnosticLocation.FaceId(faceId),
                                         ),
                                     )
                                 } else {
+                                    val paletteIndex = renderVariant.cpalPaletteIndex ?: 0
+                                    if (paletteIndex !in 0 until resolvedColorData.paletteCount) {
+                                        failure(
+                                            FontError.UnsupportedRepresentationProfile(
+                                                "The selected CPAL palette is unavailable in this font.",
+                                                FontDiagnosticLocation.FaceId(faceId),
+                                            ),
+                                        )
+                                    } else {
                                     FontOperationResult.Success(
                                         ColrV0RenderAssetHandle(
                                             faceId = faceId,
@@ -269,16 +297,14 @@ internal data class TrueTypeFontInstance(
                                                 variantSnapshot = renderVariant.takeUnless { it == FontRenderVariantSnapshot.default },
                                             ),
                                             profile = profile,
-                                            colorData = colorData.value,
+                                            colorData = resolvedColorData,
                                             paletteIndex = paletteIndex,
                                             foregroundColor = renderVariant.foregroundColor ?: GlyphColor(0, 0, 0),
                                         ),
                                     )
+                                    }
                                 }
                             }
-
-                            is FontOperationResult.Failure -> colorData
-                            is FontOperationResult.Cancelled -> colorData
                         }
                     }
                 }
@@ -493,7 +519,7 @@ internal class TrueTypeRenderAssetHandle(
     }
 }
 
-/** Asset handle for the normalized SVG-in-OpenType route and its profile-certified `glyf` fallback. */
+/** Asset handle for the normalized SVG-in-OpenType route and its profile-certified color or `glyf` fallback. */
 internal class SvgOpenTypeRenderAssetHandle(
     override val faceId: FontFaceId,
     private var resourceLease: PreparedFontResourceLease?,
@@ -501,6 +527,9 @@ internal class SvgOpenTypeRenderAssetHandle(
     private val profile: PaintGraphProfile,
     private val svgData: SvgOpenTypeData,
     private val glyphCount: Int,
+    private val colorData: ColrCpalV0Data?,
+    private val paletteIndex: Int?,
+    private val foregroundColor: GlyphColor,
 ) : FontRenderAssetHandle {
     private val lifecycle = FontHandleLifecycle(::releaseResourceLease)
 
@@ -518,6 +547,9 @@ internal class SvgOpenTypeRenderAssetHandle(
                     profile = profile,
                     svgData = svgData,
                     glyphCount = glyphCount,
+                    colorData = colorData,
+                    paletteIndex = paletteIndex,
+                    foregroundColor = foregroundColor,
                 ),
             )
         } finally {
@@ -543,20 +575,33 @@ internal class SvgOpenTypeRenderAssetHandle(
             if (request.glyphId !in 0 until glyphCount) return failure(FontError.GlyphOutOfRange(request.glyphId))
             val glyphId = GlyphId(request.glyphId)
             val svgPaint = svgData.glyphPaint(glyphId)
+            val colorLayers = colorData?.layersFor(glyphId).orEmpty()
             val representationKey = GlyphRepresentationKey(
                 assetKey = key,
                 glyphId = glyphId,
                 variant = key.variant,
                 profile = GlyphRepresentationProfileKey.paintGraph(profile),
-                routeParameters = if (svgPaint == null) {
-                    SVG_GLYF_OUTLINE_FALLBACK_ROUTE_PARAMETERS
-                } else {
-                    SVG_OPEN_TYPE_V0_ROUTE_PARAMETERS
+                routeParameters = when {
+                    svgPaint != null -> SVG_OPEN_TYPE_V0_ROUTE_PARAMETERS
+                    colorLayers.isNotEmpty() -> SVG_COLR_CPAL_V0_FALLBACK_ROUTE_PARAMETERS
+                    else -> SVG_GLYF_OUTLINE_FALLBACK_ROUTE_PARAMETERS
                 },
             )
             resource.cachedRepresentation(representationKey)?.let { cached -> return cached }
             val representation = when (svgPaint) {
-                null -> materializeGlyfOutlineFallback(preparedFont, glyphId, cancellationToken)
+                null -> if (colorLayers.isEmpty()) {
+                    materializeGlyfOutlineFallback(preparedFont, glyphId, cancellationToken)
+                } else {
+                    materializeColrV0Paint(
+                        preparedFont = preparedFont,
+                        profile = profile,
+                        layers = colorLayers,
+                        palette = requireNotNull(colorData).palette(requireNotNull(paletteIndex)),
+                        foregroundColor = foregroundColor,
+                        glyphId = glyphId,
+                        cancellationToken = cancellationToken,
+                    )
+                }
                 SvgGlyphPaint.Empty -> FontOperationResult.Success(GlyphRepresentation.Empty)
                 is SvgGlyphPaint.Paint -> FontOperationResult.Success(GlyphRepresentation.Paint(svgPaint.paint))
             }
@@ -685,45 +730,23 @@ internal class ColrV0RenderAssetHandle(
             } else {
                 layers
             }
-            val nodes = ArrayList<GlyphPaintNode>(materializedGlyphIds.size + 1)
-            for (layer in materializedGlyphIds) {
-                if (cancellationToken.isCancellationRequested()) return FontOperationResult.Cancelled()
-                val outline = when (val result = preparedFont.readGlyphOutline(layer.glyphId, profile.outlineProfile, cancellationToken)) {
-                    is FontOperationResult.Success -> result.value
-                    is FontOperationResult.Failure -> return result
-                    is FontOperationResult.Cancelled -> return result
-                }
-                val representation = when (val result = OutlineMaterializer.materialize(outline, profile.outlineProfile, cancellationToken)) {
-                    is FontOperationResult.Success -> result.value
-                    is FontOperationResult.Failure -> return result
-                    is FontOperationResult.Cancelled -> return result
-                }
-                val outlineIr = (representation as? GlyphRepresentation.Outline)?.outline ?: continue
-                val color = if (layer.paletteIndex == ColrV0Layer.foregroundColorIndex) foregroundColor else palette[layer.paletteIndex]
-                nodes += GlyphPaintNode.SolidOutline(outlineIr, color)
+            when (
+                val materialized = materializeColrV0Paint(
+                    preparedFont = preparedFont,
+                    profile = profile,
+                    layers = materializedGlyphIds,
+                    palette = palette,
+                    foregroundColor = foregroundColor,
+                    glyphId = glyphId,
+                    cancellationToken = cancellationToken,
+                )
+            ) {
+                is FontOperationResult.Success -> if (cancellationToken.isCancellationRequested()) FontOperationResult.Cancelled()
+                else materialized.also { success -> resource.cacheRepresentation(representationKey, success) }
+
+                is FontOperationResult.Failure -> materialized
+                is FontOperationResult.Cancelled -> materialized
             }
-            val representation = if (nodes.isEmpty()) {
-                GlyphRepresentation.Empty
-            } else {
-                val root = if (nodes.size == 1) {
-                    0
-                } else {
-                    nodes += GlyphPaintNode.Group((nodes.indices).toList())
-                    nodes.lastIndex
-                }
-                val paint = GlyphPaintIR(schemaVersion = profile.schemaVersion, rootNode = root, nodes = nodes)
-                if (!profile.accepts(paint)) {
-                    return failure(
-                        FontError.ResourceLimitExceeded(
-                            "COLR version 0 paint graph exceeds the selected profile.",
-                            FontDiagnosticLocation.Glyph(request.glyphId),
-                        ),
-                    )
-                }
-                GlyphRepresentation.Paint(paint)
-            }
-            if (cancellationToken.isCancellationRequested()) FontOperationResult.Cancelled()
-            else FontOperationResult.Success(representation).also { success -> resource.cacheRepresentation(representationKey, success) }
         } finally {
             lease.release()
         }
@@ -738,6 +761,51 @@ internal class ColrV0RenderAssetHandle(
         resourceLease?.release()
         resourceLease = null
     }
+}
+
+private fun materializeColrV0Paint(
+    preparedFont: PreparedTrueTypeFont,
+    profile: PaintGraphProfile,
+    layers: List<ColrV0Layer>,
+    palette: List<GlyphColor>,
+    foregroundColor: GlyphColor,
+    glyphId: GlyphId,
+    cancellationToken: CancellationToken,
+): FontOperationResult<GlyphRepresentation> {
+    val nodes = ArrayList<GlyphPaintNode>(layers.size + 1)
+    for (layer in layers) {
+        if (cancellationToken.isCancellationRequested()) return FontOperationResult.Cancelled()
+        val outline = when (val result = preparedFont.readGlyphOutline(layer.glyphId, profile.outlineProfile, cancellationToken)) {
+            is FontOperationResult.Success -> result.value
+            is FontOperationResult.Failure -> return result
+            is FontOperationResult.Cancelled -> return result
+        }
+        val representation = when (val result = OutlineMaterializer.materialize(outline, profile.outlineProfile, cancellationToken)) {
+            is FontOperationResult.Success -> result.value
+            is FontOperationResult.Failure -> return result
+            is FontOperationResult.Cancelled -> return result
+        }
+        val outlineIr = (representation as? GlyphRepresentation.Outline)?.outline ?: continue
+        val color = if (layer.paletteIndex == ColrV0Layer.foregroundColorIndex) foregroundColor else palette[layer.paletteIndex]
+        nodes += GlyphPaintNode.SolidOutline(outlineIr, color)
+    }
+    if (nodes.isEmpty()) return FontOperationResult.Success(GlyphRepresentation.Empty)
+    val root = if (nodes.size == 1) {
+        0
+    } else {
+        nodes += GlyphPaintNode.Group((nodes.indices).toList())
+        nodes.lastIndex
+    }
+    val paint = GlyphPaintIR(schemaVersion = profile.schemaVersion, rootNode = root, nodes = nodes)
+    if (!profile.accepts(paint)) {
+        return failure(
+            FontError.ResourceLimitExceeded(
+                "COLR version 0 paint graph exceeds the selected profile.",
+                FontDiagnosticLocation.Glyph(glyphId.value),
+            ),
+        )
+    }
+    return FontOperationResult.Success(GlyphRepresentation.Paint(paint))
 }
 
 /** Asset handle for the explicitly supported EBLC index-format 1 / EBDT image-format 1 route. */
