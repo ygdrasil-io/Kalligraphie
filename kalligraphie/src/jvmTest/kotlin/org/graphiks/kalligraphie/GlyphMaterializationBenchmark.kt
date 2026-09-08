@@ -15,8 +15,12 @@ import org.graphiks.kalligraphie.api.BitmapLimits
 import org.graphiks.kalligraphie.api.BitmapPixelFormat
 import org.graphiks.kalligraphie.api.BitmapProfile
 import org.graphiks.kalligraphie.api.BitmapStrike
+import org.graphiks.kalligraphie.api.BaseDirection
 import org.graphiks.kalligraphie.api.CancellationToken
+import org.graphiks.kalligraphie.api.EditableLineMaterialization
 import org.graphiks.kalligraphie.api.FontAccessRequirementsSnapshot
+import org.graphiks.kalligraphie.api.FontAssetResolverHandle
+import org.graphiks.kalligraphie.api.FontCatalogSnapshot
 import org.graphiks.kalligraphie.api.FontGlyphRequest
 import org.graphiks.kalligraphie.api.FontInstance
 import org.graphiks.kalligraphie.api.FontInstanceDescriptor
@@ -25,16 +29,24 @@ import org.graphiks.kalligraphie.api.FontOperationResult
 import org.graphiks.kalligraphie.api.FontRenderAssetHandle
 import org.graphiks.kalligraphie.api.FontRenderVariantKey
 import org.graphiks.kalligraphie.api.FontRenderVariantSnapshot
+import org.graphiks.kalligraphie.api.FontResolutionCandidate
+import org.graphiks.kalligraphie.api.FontResolutionPolicySnapshot
+import org.graphiks.kalligraphie.api.FontSource
 import org.graphiks.kalligraphie.api.FontSourceProvenance
 import org.graphiks.kalligraphie.api.GlyphColorSpace
 import org.graphiks.kalligraphie.api.GlyphId
 import org.graphiks.kalligraphie.api.GlyphPaintCompositionMode
 import org.graphiks.kalligraphie.api.GlyphPaintNodeKind
 import org.graphiks.kalligraphie.api.GlyphRepresentation
+import org.graphiks.kalligraphie.api.HorizontalParagraphConstraints
+import org.graphiks.kalligraphie.api.LayoutRect
 import org.graphiks.kalligraphie.api.LayoutUnit
 import org.graphiks.kalligraphie.api.OutlineProfile
 import org.graphiks.kalligraphie.api.PaintGraphLimits
 import org.graphiks.kalligraphie.api.PaintGraphProfile
+import org.graphiks.kalligraphie.api.ParagraphLayoutResult
+import org.graphiks.kalligraphie.api.TextSlice
+import org.graphiks.kalligraphie.api.TextVersion
 
 class GlyphMaterializationBenchmarkTest {
     @Test
@@ -56,7 +68,24 @@ class GlyphMaterializationBenchmarkTest {
         outputPath.parent?.let(Files::createDirectories)
         Files.writeString(outputPath, rendered)
 
-        assertEquals(GlyphMaterializationBenchmark.requiredProfileNames, report.profiles.map(GlyphMaterializationMeasurementProfile::name))
+        assertEquals(
+            listOf(
+                "ColrColdNormalization",
+                "ColrWarmResolution",
+                "SvgColdNormalization",
+                "SvgWarmResolution",
+                "BitmapColdDecode",
+                "BitmapWarmResolution",
+                "PaletteChange",
+                "CachePressureAndEviction",
+                "CooperativeCancellation",
+                "RenderableConsumerColdSingleFont",
+                "RenderableConsumerWarmSingleFont",
+                "RenderableConsumerColdMixedBidi",
+                "RenderableConsumerWarmMixedBidi",
+            ),
+            report.profiles.map(GlyphMaterializationMeasurementProfile::name),
+        )
         assertTrue(rendered.contains("Glyph materialization measurement"))
     }
 
@@ -195,6 +224,10 @@ internal object GlyphMaterializationBenchmark {
         "PaletteChange",
         "CachePressureAndEviction",
         "CooperativeCancellation",
+        "RenderableConsumerColdSingleFont",
+        "RenderableConsumerWarmSingleFont",
+        "RenderableConsumerColdMixedBidi",
+        "RenderableConsumerWarmMixedBidi",
     )
 
     fun reportFor(
@@ -229,12 +262,30 @@ internal object GlyphMaterializationBenchmark {
         val colr = Fixture("BungeeColor-Regular.ttf", "Bungee Color COLR v0", GlyphId(43), colrBytes())
         val svg = Fixture("TwitterColorEmoji-SVGinOT-15.1.0-glyph5.ttf", "TwitterColorEmoji SVG-in-OpenType", GlyphId(1), svgBytes())
         val bitmap = Fixture("ebdt_fmt1.ttf", "Skia EBDT format 1", GlyphId(3), bitmapBytes())
+        val liberation = Fixture("LiberationSans-Regular.ttf", "Liberation Sans Regular", GlyphId(36), liberationBytes())
+        val consumerSingle = ConsumerScenario(
+            id = "single-font",
+            fixtures = listOf(colr),
+            text = "A",
+            language = "en",
+            requirements = colrRequirements(),
+        )
+        val consumerMixedBidi = ConsumerScenario(
+            id = "mixed-bidi",
+            fixtures = listOf(colr, liberation),
+            text = "Aא",
+            language = "he",
+            requirements = FontAccessRequirementsSnapshot.renderable(listOf(
+                colrRequirements().acceptedProfiles.single(),
+                outlineProfile(),
+            )),
+        )
         val environment = GlyphMaterializationMeasurementEnvironment(
             commit = currentCommit(),
             machine = machineName(),
             operatingSystem = "${System.getProperty("os.name")} ${System.getProperty("os.version")} (${System.getProperty("os.arch")})",
             jvm = "${System.getProperty("java.vm.name")} ${System.getProperty("java.runtime.version")}",
-            fontHashes = listOf(colr, svg, bitmap).associate { fixture -> fixture.name to fixture.bytes.sha256Hex() },
+            fontHashes = listOf(colr, svg, bitmap, liberation).associate { fixture -> fixture.name to fixture.bytes.sha256Hex() },
             gcPolicy = GC_POLICY,
         )
         val profiles = listOf(
@@ -247,13 +298,17 @@ internal object GlyphMaterializationBenchmark {
             paletteChangeProfile(colr, warmupIterations, iterations),
             cachePressureProfile(svg, warmupIterations, iterations),
             cancellationProfile(colr, warmupIterations, iterations),
+            consumerColdProfile(consumerSingle, warmupIterations, iterations),
+            consumerWarmProfile(consumerSingle, warmupIterations, iterations),
+            consumerColdProfile(consumerMixedBidi, warmupIterations, iterations),
+            consumerWarmProfile(consumerMixedBidi, warmupIterations, iterations),
         )
         return reportFor(
             environment = environment,
             corpus = GlyphMaterializationMeasurementCorpus(
-                id = "portable-glyph-materialization-v1",
-                description = "one audited COLR/CPAL glyph, one audited SVG-in-OpenType glyph, and one audited EBDT format 1 glyph",
-                glyphCount = 3,
+                id = "portable-glyph-materialization-v2",
+                description = "three direct glyph routes plus a one-scalar single-font and a two-scalar mixed-fallback BiDi RENDERABLE consumer journey",
+                glyphCount = 6,
             ),
             profiles = profiles,
         )
@@ -416,6 +471,57 @@ internal object GlyphMaterializationBenchmark {
         }
     }
 
+    private fun consumerColdProfile(
+        scenario: ConsumerScenario,
+        warmupIterations: Int,
+        iterations: Int,
+    ): GlyphMaterializationMeasurementProfile = measuredProfile(
+        name = "RenderableConsumerCold${scenario.profileSuffix}",
+        route = "JVM RENDERABLE consumer journey (${scenario.routeDescription})",
+        timedBoundary = "starts before embedded catalog creation and ends after the certified paragraph layout is consumed; resolver closure is excluded",
+        cacheState = "cold: a new embedded catalog and resolver are created for every sample",
+        warmupIterations = warmupIterations,
+        iterations = iterations,
+    ) { record ->
+        repeat(warmupIterations + iterations) { index ->
+            val sample = timed {
+                val opened = openConsumerScenario(scenario)
+                try {
+                    observeConsumerLayout(layoutConsumerScenario(opened), scenario, scenario.sourceBytes)
+                } finally {
+                    opened.close()
+                }
+            }
+            if (index >= warmupIterations) record(sample)
+        }
+    }
+
+    private fun consumerWarmProfile(
+        scenario: ConsumerScenario,
+        warmupIterations: Int,
+        iterations: Int,
+    ): GlyphMaterializationMeasurementProfile = measuredProfile(
+        name = "RenderableConsumerWarm${scenario.profileSuffix}",
+        route = "JVM RENDERABLE consumer journey (${scenario.routeDescription})",
+        timedBoundary = "starts immediately before the public paragraph facade and ends after the certified layout is consumed; setup and resolver closure are excluded",
+        cacheState = "warm: one catalog and resolver remain open; an untimed first layout seeds the per-face representation cache",
+        warmupIterations = warmupIterations,
+        iterations = iterations,
+    ) { record ->
+        val opened = openConsumerScenario(scenario)
+        try {
+            observeConsumerLayout(layoutConsumerScenario(opened), scenario, sourceBytes = 0L)
+            repeat(warmupIterations + iterations) { index ->
+                val sample = timed {
+                    observeConsumerLayout(layoutConsumerScenario(opened), scenario, sourceBytes = 0L)
+                }
+                if (index >= warmupIterations) record(sample)
+            }
+        } finally {
+            opened.close()
+        }
+    }
+
     private fun resolveCold(fixture: Fixture, requirements: FontAccessRequirementsSnapshot): Observation {
         val opened = openAsset(fixture, requirements, cachePolicy = CACHE_POLICY)
         return try {
@@ -423,6 +529,85 @@ internal object GlyphMaterializationBenchmark {
         } finally {
             opened.close()
         }
+    }
+
+    private fun openConsumerScenario(scenario: ConsumerScenario): OpenConsumerScenario {
+        val catalog = success(
+            Kalligraphie.embedded(
+                sources = scenario.fixtures.map { fixture ->
+                    FontSource(fixture.bytes, FontSourceProvenance(fixture.provenance))
+                },
+                cachePolicy = CACHE_POLICY,
+            ),
+        )
+        val resolver = success(catalog.openAssetResolver())
+        val policy = FontResolutionPolicySnapshot(
+            generation = catalog.generation,
+            policyId = "glyph-materialization-${scenario.id}",
+            version = "1",
+            candidates = catalog.faces.map { record -> FontResolutionCandidate(record.id) },
+            lastResortFace = catalog.faces.last().id,
+        )
+        val snapshot = Kalligraphie.decodeUtf8(
+            version = TextVersion.create(),
+            slices = listOf(TextSlice.Utf8(scenario.text.encodeToByteArray())),
+        ).snapshot
+        return OpenConsumerScenario(scenario, catalog, resolver, policy, snapshot)
+    }
+
+    private fun layoutConsumerScenario(opened: OpenConsumerScenario): ParagraphLayoutResult =
+        JvmEditableParagraphFacade.layout(
+            JvmEditableParagraphFacadeRequest(
+                snapshot = opened.snapshot,
+                constraints = HorizontalParagraphConstraints(
+                    region = LayoutRect(LayoutUnit(0f), LayoutUnit(0f), LayoutUnit(8_000f), LayoutUnit(1_000f)),
+                    lineMetrics = org.graphiks.kalligraphie.api.LineVerticalMetrics(LayoutUnit(800f), LayoutUnit(200f)),
+                ),
+                baseDirection = BaseDirection.LEFT_TO_RIGHT,
+                language = opened.scenario.language,
+                fontCatalog = opened.catalog,
+                resolutionPolicy = opened.policy,
+                fontInstanceDescriptor = FontInstanceDescriptor(LayoutUnit(1_000f)),
+                materialization = EditableLineMaterialization.Renderable(
+                    resolver = opened.resolver,
+                    renderVariant = FontRenderVariantSnapshot.default,
+                    requirements = opened.scenario.requirements,
+                ),
+            ),
+        )
+
+    private fun observeConsumerLayout(
+        result: ParagraphLayoutResult,
+        scenario: ConsumerScenario,
+        sourceBytes: Long,
+    ): Observation {
+        val layout = when (result) {
+            is ParagraphLayoutResult.Success -> result.layout
+            is ParagraphLayoutResult.Failure -> error("Consumer measurement failed: ${result.error}")
+            is ParagraphLayoutResult.Cancelled -> error("Consumer measurement was unexpectedly cancelled.")
+        }
+        val glyphs = layout.lines.flatMap { line -> line.positionedGlyphRuns.flatMap { run -> run.glyphs } }
+        check(glyphs.isNotEmpty()) { "Consumer measurement must publish final glyphs." }
+        check(glyphs.all { glyph -> glyph.materializationCertificate != null }) {
+            "Consumer measurement must publish only certified glyphs."
+        }
+        val faceCount = layout.lines
+            .flatMap { line -> line.positionedGlyphRuns }
+            .map { run -> run.fontInstanceKey.face }
+            .distinct()
+            .size
+        check(faceCount == scenario.expectedFaceCount) {
+            "Consumer scenario ${scenario.id} expected ${scenario.expectedFaceCount} selected faces but received $faceCount."
+        }
+        consumeConsumerLayout(layout)
+        return Observation(GlyphRepresentation.Empty, sourceBytes, 0L, 0L, 0L)
+    }
+
+    private fun consumeConsumerLayout(layout: org.graphiks.kalligraphie.api.ParagraphLayout) {
+        val certificates = layout.lines.sumOf { line ->
+            line.positionedGlyphRuns.sumOf { run -> run.glyphs.count { glyph -> glyph.materializationCertificate != null } }
+        }
+        blackhole = blackhole xor certificates.toLong()
     }
 
     private fun openAsset(
@@ -555,6 +740,8 @@ internal object GlyphMaterializationBenchmark {
 
     private fun bitmapBytes(): ByteArray = resourceBytes("/fonts/skia-ebdt-format1/ebdt_fmt1.ttf")
 
+    private fun liberationBytes(): ByteArray = resourceBytes("/fonts/liberation/LiberationSans-Regular.ttf")
+
     private fun resourceBytes(path: String): ByteArray = checkNotNull(GlyphMaterializationBenchmark::class.java.getResourceAsStream(path)) {
         "Missing materialization fixture $path."
     }.use { input -> input.readBytes() }
@@ -597,8 +784,48 @@ internal object GlyphMaterializationBenchmark {
 
     private data class Fixture(val name: String, val provenance: String, val glyphId: GlyphId, val bytes: ByteArray)
 
+    private data class ConsumerScenario(
+        val id: String,
+        val fixtures: List<Fixture>,
+        val text: String,
+        val language: String,
+        val requirements: FontAccessRequirementsSnapshot,
+    ) {
+        val profileSuffix: String = when (id) {
+            "single-font" -> "SingleFont"
+            "mixed-bidi" -> "MixedBidi"
+            else -> error("Unsupported consumer measurement scenario: $id")
+        }
+
+        val routeDescription: String = when (id) {
+            "single-font" -> "one Bungee Color Latin glyph"
+            "mixed-bidi" -> "Bungee Color Latin plus Liberation Sans Hebrew fallback"
+            else -> error("Unsupported consumer measurement scenario: $id")
+        }
+
+        val sourceBytes: Long = fixtures.sumOf { fixture -> fixture.bytes.size.toLong() }
+
+        val expectedFaceCount: Int = when (id) {
+            "single-font" -> 1
+            "mixed-bidi" -> 2
+            else -> error("Unsupported consumer measurement scenario: $id")
+        }
+    }
+
     private class OpenAsset(val resolver: org.graphiks.kalligraphie.api.FontAssetResolverHandle, val instance: FontInstance, val asset: FontRenderAssetHandle) {
         fun close() { asset.close(); resolver.close() }
+    }
+
+    private class OpenConsumerScenario(
+        val scenario: ConsumerScenario,
+        val catalog: FontCatalogSnapshot,
+        val resolver: FontAssetResolverHandle,
+        val policy: FontResolutionPolicySnapshot,
+        val snapshot: org.graphiks.kalligraphie.api.TextSnapshot,
+    ) {
+        fun close() {
+            resolver.close()
+        }
     }
 
     private data class Observation(

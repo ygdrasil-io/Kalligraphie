@@ -114,6 +114,39 @@ class SvgInOpenTypeGlyphRepresentationTest {
     }
 
     @Test
+    fun keepsTheColrColorGlyphForAGlyphOutsideTheSvgCoverage() {
+        val catalog = success(
+            Kalligraphie.embedded(
+                bungeeColorWithAnAuditedSvgTable(),
+                FontSourceProvenance("Bungee Color Regular with audited SVG-in-OpenType table"),
+            ),
+        )
+        val requirements = FontAccessRequirementsSnapshot.renderable(listOf(paintProfileWithColorFallback()))
+        val face = success(catalog.resolveFace(catalog.faces.single().id, requirements))
+        val instance = success(face.instantiate(FontInstanceDescriptor(LayoutUnit(1_000f))))
+        val resolver = success(catalog.openAssetResolver())
+        try {
+            val asset = success(instance.acquireRenderAsset(resolver, FontRenderVariantKey.default, requirements))
+            try {
+                val paint = assertIs<GlyphRepresentation.Paint>(success(asset.resolveGlyph(FontGlyphRequest(GlyphId(43))))).paint
+
+                assertEquals(
+                    listOf(292, 293),
+                    paint.nodes.filterIsInstance<GlyphPaintNode.SolidOutline>().map { it.outline.glyphId },
+                )
+                assertEquals(
+                    listOf(GlyphColor(201, 9, 0), GlyphColor(255, 149, 128)),
+                    paint.nodes.filterIsInstance<GlyphPaintNode.SolidOutline>().map { it.color },
+                )
+            } finally {
+                asset.close()
+            }
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
     fun refusesAnOutOfRangeSvgGlyphWhenTheProfileCannotRepresentItsOutlineFallback() {
         val catalog = success(
             Kalligraphie.embedded(
@@ -269,6 +302,35 @@ class SvgInOpenTypeGlyphRepresentationTest {
         ),
     )
 
+    private fun paintProfileWithColorFallback(): PaintGraphProfile = PaintGraphProfile(
+        acceptedNodeKinds = listOf(
+            GlyphPaintNodeKind.SOLID_OUTLINE,
+            GlyphPaintNodeKind.PATH,
+            GlyphPaintNodeKind.GROUP,
+        ),
+        acceptedCompositionModes = listOf(org.graphiks.kalligraphie.api.GlyphPaintCompositionMode.SOURCE_OVER),
+        limits = PaintGraphLimits(
+            maxNodes = 4,
+            maxReferences = 4,
+            maxDepth = 2,
+            maxSourceBytes = 100_000,
+            maxPaths = 2,
+            maxPalettes = 9,
+            maxPaletteEntries = 2,
+            maxColorRecords = 16,
+            maxDecodedPaletteBytes = 72,
+            maxBaseGlyphRecords = 288,
+            maxLayerRecords = 576,
+        ),
+        outlineProfile = OutlineProfile(
+            maxBytes = 1_000_000,
+            maxContours = 1_024,
+            maxPoints = 65_536,
+            maxCompositeDepth = 16,
+            maxCompositeComponents = 256,
+        ),
+    )
+
     private fun fixtureBytes(): ByteArray =
         javaClass.getResourceAsStream("/fonts/twemoji-svginot-glyph5/TwitterColorEmoji-SVGinOT-15.1.0-glyph5.ttf.base64")
             ?.bufferedReader()
@@ -288,9 +350,26 @@ class SvgInOpenTypeGlyphRepresentationTest {
             bytes = svgTableBytes(),
         )
 
+    /**
+     * Builds a valid test-only hybrid from audited Bungee Color and SVG-in-OpenType fixtures.
+     * SVG covers glyph 1 only; Bungee glyph 43 (`A`) remains outside that coverage and has the
+     * COLR v0 layers 292 and 293 specified in the Bungee Color provenance record.
+     */
+    private fun bungeeColorWithAnAuditedSvgTable(): ByteArray =
+        sfntWithAdditionalTable(
+            source = bungeeColorFixtureBytes(),
+            tag = "SVG ",
+            bytes = svgTableBytes(),
+        )
+
     private fun liberationSansFixtureBytes(): ByteArray =
         checkNotNull(javaClass.getResourceAsStream("/fonts/liberation/LiberationSans-Regular.ttf")) {
             "Missing Liberation Sans fixture resource."
+        }.use { stream -> stream.readBytes() }
+
+    private fun bungeeColorFixtureBytes(): ByteArray =
+        checkNotNull(javaClass.getResourceAsStream("/fonts/bungee-color/BungeeColor-Regular.ttf")) {
+            "Missing Bungee Color fixture resource."
         }.use { stream -> stream.readBytes() }
 
     private fun svgTableBytes(): ByteArray {

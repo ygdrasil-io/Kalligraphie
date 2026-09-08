@@ -29,6 +29,10 @@ avant l’ajout du test :
 
 Ces valeurs ont été extraites hors de l’implémentation testée par un lecteur
 structural Python 3.14.7 (`struct`, entiers big-endian) et recoupées avec
-Fontconfig 2.18.3 pour l’identité `EmojiTwo COLRv0 Regular`. Une validation
-humaine explicite de cet oracle reste requise avant toute publication qui
-revendiquerait cette validation.
+Fontconfig 2.18.3 pour l’identité `EmojiTwo COLRv0 Regular`.
+
+## Validation humaine
+
+Un mainteneur a vérifié la provenance, la licence, l’empreinte et l’oracle
+attendu de cette fixture, puis a validé son utilisation comme référence de
+test. Cette revue reste indépendante de l’interpréteur COLR de Kalligraphie.

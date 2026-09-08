@@ -21,6 +21,7 @@ import org.graphiks.kalligraphie.api.FontResolutionPolicySnapshot
 import org.graphiks.kalligraphie.api.FontRenderVariantSnapshot
 import org.graphiks.kalligraphie.api.GlyphRepresentationProfile
 import org.graphiks.kalligraphie.api.GlyphRepresentation
+import org.graphiks.kalligraphie.api.GlyphMaterializationRoute
 import org.graphiks.kalligraphie.api.MultiFontEditableLineRequest
 import org.graphiks.kalligraphie.api.OpenTypeFeature
 import org.graphiks.kalligraphie.api.OpenTypeScript
@@ -40,6 +41,14 @@ import org.graphiks.kalligraphie.api.toDiagnostic
 /** Resolves one captured line input into shaped runs without leaking temporary assets. */
 internal object FontFallbackResolver {
     fun resolve(request: MultiFontEditableLineRequest): FontOperationResult<FontFallbackResolution> = resolve(
+        request,
+        GlyphMaterializationProofs(),
+    )
+
+    fun resolve(
+        request: MultiFontEditableLineRequest,
+        proofs: GlyphMaterializationProofs,
+    ): FontOperationResult<FontFallbackResolution> = resolve(
         ResolutionRequest(
             snapshot = request.snapshot,
             sourceRange = request.unicodeAnalysis.range,
@@ -54,6 +63,7 @@ internal object FontFallbackResolver {
             writingMode = WritingMode.HORIZONTAL_TB,
             cancellationToken = request.cancellationToken,
         ),
+        proofs,
     )
 
     /** Resolves one paragraph-local range without observing unrelated snapshot text. */
@@ -63,6 +73,7 @@ internal object FontFallbackResolver {
         shapingContextRange: TextRange,
         unicodeAnalysis: UnicodeAnalysis,
         materialization: EditableLineMaterialization,
+        proofs: GlyphMaterializationProofs = GlyphMaterializationProofs(),
     ): FontOperationResult<FontFallbackResolution> = resolve(
         ResolutionRequest(
             snapshot = request.snapshot,
@@ -78,9 +89,13 @@ internal object FontFallbackResolver {
             writingMode = request.constraints.writingMode,
             cancellationToken = request.cancellationToken,
         ),
+        proofs,
     )
 
-    private fun resolve(request: ResolutionRequest): FontOperationResult<FontFallbackResolution> {
+    private fun resolve(
+        request: ResolutionRequest,
+        proofs: GlyphMaterializationProofs,
+    ): FontOperationResult<FontFallbackResolution> {
         val units = fallbackUnits(request)
         if (units.isEmpty()) return FontOperationResult.Success(FontFallbackResolution(emptyList(), emptyList(), emptyList()))
 
@@ -128,7 +143,7 @@ internal object FontFallbackResolver {
                     shaped += cached
                     return@forEach
                 }
-                when (val attempted = shapeAndValidate(group, request)) {
+                when (val attempted = shapeAndValidate(group, request, proofs)) {
                     is Attempt.Success -> {
                         shapedGroups[signature] = attempted.runs
                         shaped += attempted.runs
@@ -290,7 +305,11 @@ internal object FontFallbackResolver {
         return ScalarMapping.Supported
     }
 
-    private fun shapeAndValidate(group: List<AssignedUnit>, request: ResolutionRequest): Attempt {
+    private fun shapeAndValidate(
+        group: List<AssignedUnit>,
+        request: ResolutionRequest,
+        proofs: GlyphMaterializationProofs,
+    ): Attempt {
         val first = group.first()
         val fragments = shapingFragments(group, request)
         val shaped = mutableListOf<ShapedGlyphRun>()
@@ -329,7 +348,7 @@ internal object FontFallbackResolver {
             }
             val materialization = request.materialization
             if (materialization is EditableLineMaterialization.Renderable) {
-                when (val validation = validateMaterialization(fragmentRun, first.instance, materialization, request)) {
+                when (val validation = validateMaterialization(fragmentRun, first.instance, materialization, request, proofs)) {
                     Validation.Valid -> Unit
                     is Validation.Rejected -> return Attempt.Rejected(validation.diagnostics)
                     is Validation.Cancelled -> return Attempt.Cancelled(validation.diagnostics)
@@ -423,7 +442,11 @@ internal object FontFallbackResolver {
         instance: FontInstance,
         materialization: EditableLineMaterialization.Renderable,
         request: ResolutionRequest,
+        proofs: GlyphMaterializationProofs,
     ): Validation {
+        if (proofs.find(instance, materialization, shaped.glyphs.map { it.glyphId }) != null) {
+            return Validation.Valid
+        }
         val asset = when (
             val acquired = instance.acquireMaterializationAsset(materialization)
         ) {
@@ -431,6 +454,7 @@ internal object FontFallbackResolver {
             is FontOperationResult.Failure -> return Validation.Rejected(acquired.diagnostics + acquired.error.toDiagnostic())
             is FontOperationResult.Cancelled -> return Validation.Cancelled(acquired.diagnostics)
         }
+        val routes = mutableMapOf<org.graphiks.kalligraphie.api.GlyphId, GlyphMaterializationRoute>()
         var validation: Validation = Validation.Valid
         try {
             val variantSnapshot = asset.key.variantSnapshot ?: FontRenderVariantSnapshot.default
@@ -447,23 +471,30 @@ internal object FontFallbackResolver {
             } else {
                 shaped.glyphs.forEach { glyph ->
                     if (validation != Validation.Valid) return@forEach
+                    if (routes.containsKey(glyph.glyphId)) return@forEach
                     when (val resolved = asset.resolveGlyph(FontGlyphRequest(glyph.glyphId), request.cancellationToken)) {
                         is FontOperationResult.Success -> when (val representation = resolved.value) {
-                            GlyphRepresentation.Empty -> Unit
+                            GlyphRepresentation.Empty -> routes[glyph.glyphId] = GlyphMaterializationRoute.EMPTY
                             is GlyphRepresentation.Outline -> if (
                                 asset.key.representationProfile !is org.graphiks.kalligraphie.api.OutlineProfile ||
                                 representation.outline.glyphId != glyph.glyphId.value
                             ) {
                                 validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved outline does not match the certified profile and final shaped glyph identifier.")))
+                            } else {
+                                routes[glyph.glyphId] = GlyphMaterializationRoute.OUTLINE
                             }
                             is GlyphRepresentation.Paint -> if (asset.key.representationProfile !is org.graphiks.kalligraphie.api.PaintGraphProfile) {
                                 validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved paint graph does not match the certified paint profile.")))
+                            } else {
+                                routes[glyph.glyphId] = GlyphMaterializationRoute.PAINT_GRAPH
                             }
                             is GlyphRepresentation.Bitmap -> if (
                                 asset.key.representationProfile !is org.graphiks.kalligraphie.api.BitmapProfile ||
                                 representation.bitmap.glyphId != glyph.glyphId
                             ) {
                                 validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved bitmap does not match the certified bitmap profile and final shaped glyph identifier.")))
+                            } else {
+                                routes[glyph.glyphId] = GlyphMaterializationRoute.BITMAP
                             }
                         }
 
@@ -485,6 +516,7 @@ internal object FontFallbackResolver {
                 is FontOperationResult.Success -> Unit
             }
         }
+        if (validation == Validation.Valid) proofs.record(asset.key, routes)
         return validation
     }
 

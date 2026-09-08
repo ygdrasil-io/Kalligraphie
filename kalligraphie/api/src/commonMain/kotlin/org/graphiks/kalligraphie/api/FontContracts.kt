@@ -94,8 +94,17 @@ public class FontAccessRequirementsSnapshot private constructor(
     /** Whether a native-only route is forbidden for this request. */
     public val portableDataRequired: Boolean,
 ) {
-    /** Ordered immutable profiles a consumer can materialize. */
-    public val acceptedProfiles: List<GlyphRepresentationProfile> = acceptedProfiles.immutableListSnapshot()
+    /**
+     * Ordered immutable profiles eligible for materialization.
+     *
+     * Native profiles supplied alongside [portableDataRequired] are excluded before providers
+     * observe this list, so a portable-data request cannot be satisfied by a native route ahead
+     * of a portable alternative. The relative order of the remaining profiles is preserved.
+     */
+    public val acceptedProfiles: List<GlyphRepresentationProfile> =
+        acceptedProfiles
+            .filter { profile -> !portableDataRequired || profile !is NativeHandleProfile }
+            .immutableListSnapshot()
 
     /** First accepted outline profile, retained for compatibility with outline-only consumers. */
     public val outlineProfile: OutlineProfile? = this.acceptedProfiles.filterIsInstance<OutlineProfile>().firstOrNull()
@@ -187,8 +196,9 @@ public sealed interface GlyphRepresentationProfile {
  * Explicit permission to borrow one platform-native materialization route.
  *
  * This profile carries only stable bridge metadata; it never exposes a platform object from the
- * common API. It is incompatible with [FontAccessRequirementsSnapshot.portableDataRequired]
- * when it is the only accepted profile.
+ * common API. A request with [FontAccessRequirementsSnapshot.portableDataRequired] removes every
+ * native profile before provider negotiation, so a native-only list becomes invalid and native
+ * profiles never take precedence over portable alternatives.
  */
 public data class NativeHandleProfile(
     /** Stable kind of the platform bridge, such as a platform-font bridge. */

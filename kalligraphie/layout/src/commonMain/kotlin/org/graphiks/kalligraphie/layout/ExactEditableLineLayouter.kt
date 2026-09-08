@@ -77,10 +77,13 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
      * The fallback resolver shapes every atomic Unicode unit with exactly one selected face and
      * validates final glyph-materialization routes before this method publishes an [EditableLineResult]. The
      * supplied resolver remains borrowed by the caller; all temporary assets are closed before
-     * this method returns. Failure and cancellation never publish a partial line.
+     * this method returns. A matching operation-local route proof may avoid resolving an unchanged
+     * glyph twice, but it retains neither an asset nor representation data and cannot escape the
+     * call. Failure and cancellation never publish a partial line.
      */
     public fun layout(request: MultiFontEditableLineRequest): EditableLineResult {
-        return when (val resolved = FontFallbackResolver.resolve(request)) {
+        val proofs = GlyphMaterializationProofs()
+        return when (val resolved = FontFallbackResolver.resolve(request, proofs)) {
             is FontOperationResult.Success -> {
                 when (
                     val positioned = layout(
@@ -105,6 +108,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                             materialization = request.materialization,
                             cancellationToken = request.cancellationToken,
                         ),
+                        proofs,
                     )
                 ) {
                     is EditableLineResult.Success -> EditableLineResult.Success(
@@ -141,7 +145,12 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
      * This singleton retains no request resource and is safe for concurrent calls; renderable
      * mode borrows and closes its asset before returning.
      */
-    override fun layout(request: EditableLineRequest): EditableLineResult {
+    override fun layout(request: EditableLineRequest): EditableLineResult = layout(request, GlyphMaterializationProofs())
+
+    internal fun layout(
+        request: EditableLineRequest,
+        proofs: GlyphMaterializationProofs,
+    ): EditableLineResult {
         val diagnostics = mutableListOf<EditableLineDiagnostic>()
         val placements = try {
             positionRuns(request, refineGlyphs(request, diagnostics))
@@ -155,7 +164,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
         placements.forEach { placement ->
             placement.caretPositions.putAll(resolveInternalLigatureCarets(request, placement, diagnostics))
         }
-        val certification = when (val result = certifyFinalGlyphs(request, placements)) {
+        val certification = when (val result = certifyFinalGlyphs(request, placements, proofs)) {
             is CertificationResult.Success -> result
             is CertificationResult.Failure -> return EditableLineResult.Failure(result.error, diagnostics + result.diagnostics)
             is CertificationResult.Cancelled -> return EditableLineResult.Cancelled(diagnostics + result.diagnostics)
@@ -773,6 +782,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
     private fun certifyFinalGlyphs(
         request: EditableLineRequest,
         placements: List<RunPlacement>,
+        proofs: GlyphMaterializationProofs,
     ): CertificationResult {
         return when (val materialization = request.materialization) {
             EditableLineMaterialization.LayoutOnly -> CertificationResult.Success(emptyMap(), emptyMap())
@@ -782,11 +792,29 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                 val certificates = mutableMapOf<GlyphPosition, GlyphMaterializationCertificate>()
                 placements.forEach { placement ->
                     val instance = request.fontInstances.single { it.key == placement.sourceRun.fontInstanceKey }
+                    val proof = proofs.find(
+                        instance,
+                        materialization,
+                        placement.glyphs.map { glyph -> glyph.shapedGlyph.glyphId },
+                    )
+                    if (proof != null) {
+                        val certified = certifyWithProof(placement, proof)
+                        assetKeys.putAll(certified.assetKeys)
+                        certificates.putAll(certified.certificates)
+                        return@forEach
+                    }
                     when (
                         val acquired = instance.acquireMaterializationAsset(materialization)
                     ) {
                         is FontOperationResult.Success -> when (
-                            val certified = certifyWithAsset(request, listOf(placement), instance, acquired.value, materialization)
+                            val certified = certifyWithAsset(
+                                request,
+                                listOf(placement),
+                                instance,
+                                acquired.value,
+                                materialization,
+                                proofs,
+                            )
                         ) {
                             is CertificationResult.Success -> {
                                 assetKeys.putAll(certified.assetKeys)
@@ -810,12 +838,30 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
         }
     }
 
+    private fun certifyWithProof(
+        placement: RunPlacement,
+        proof: GlyphMaterializationProof,
+    ): CertificationResult.Success {
+        val certificates = placement.glyphs.mapIndexed { glyphIndex, glyph ->
+            GlyphPosition(placement.visualOrder, glyphIndex) to GlyphMaterializationCertificate(
+                assetKey = proof.assetKey,
+                glyphId = glyph.shapedGlyph.glyphId,
+                route = checkNotNull(proof.routes[glyph.shapedGlyph.glyphId]),
+            )
+        }.toMap()
+        return CertificationResult.Success(
+            assetKeys = mapOf(placement.visualOrder to proof.assetKey),
+            certificates = certificates,
+        )
+    }
+
     private fun certifyWithAsset(
         request: EditableLineRequest,
         placements: List<RunPlacement>,
         instance: org.graphiks.kalligraphie.api.FontInstance,
         asset: FontRenderAssetHandle,
         materialization: EditableLineMaterialization.Renderable,
+        proofs: GlyphMaterializationProofs,
     ): CertificationResult {
         val expectedVariantSnapshot = asset.key.variantSnapshot ?: FontRenderVariantSnapshot.default
         var result: CertificationResult = if (
@@ -836,11 +882,21 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                 emptyList(),
             )
         }
+        val routes = mutableMapOf<org.graphiks.kalligraphie.api.GlyphId, GlyphMaterializationRoute>()
         try {
             val certificates = mutableMapOf<GlyphPosition, GlyphMaterializationCertificate>()
             certification@ for (placement in placements) {
                 if (result !is CertificationResult.Success) break
                 for ((glyphIndex, glyph) in placement.glyphs.withIndex()) {
+                    val existingRoute = routes[glyph.shapedGlyph.glyphId]
+                    if (existingRoute != null) {
+                        certificates[GlyphPosition(placement.visualOrder, glyphIndex)] = GlyphMaterializationCertificate(
+                            assetKey = asset.key,
+                            glyphId = glyph.shapedGlyph.glyphId,
+                            route = existingRoute,
+                        )
+                        continue
+                    }
                     when (val representation = asset.resolveGlyph(org.graphiks.kalligraphie.api.FontGlyphRequest(glyph.shapedGlyph.glyphId), request.cancellationToken)) {
                         is FontOperationResult.Success -> {
                             val resolvedGlyph = representation.value
@@ -897,6 +953,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                                     GlyphMaterializationRoute.BITMAP
                                 }
                             }
+                            routes[glyph.shapedGlyph.glyphId] = route
                             certificates[GlyphPosition(placement.visualOrder, glyphIndex)] = GlyphMaterializationCertificate(
                                 assetKey = asset.key,
                                 glyphId = glyph.shapedGlyph.glyphId,
@@ -941,6 +998,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                 is FontOperationResult.Success -> Unit
             }
         }
+        if (result is CertificationResult.Success) proofs.record(asset.key, routes)
         return result
     }
 

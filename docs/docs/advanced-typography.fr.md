@@ -132,6 +132,14 @@ tabulation, marqueur d'ellipsis — sur l'identifiant de glyphe final. Chaque
 glyphe publié porte son certificat et sa clé de ressource de rendu (`asset`), y compris les
 glyphes synthétiques.
 
+La validation de repli conserve seulement une preuve locale à l'opération : la
+clé de ressource, l'identifiant de glyphe et la route acceptée. Lorsque ces
+trois valeurs correspondent encore après les transformations, la certification
+réemploie cette preuve au lieu de matérialiser de nouveau le même glyphe. La
+preuve ne contient ni IR ni handle (poignée d'accès), n'est publiée ni dans
+`EditableLine` ni dans `TextLayout`, et est détruite au retour de l'appel de
+composition.
+
 ## Écriture verticale
 
 `ParagraphConstraints.writingMode` sélectionne la composition verticale
