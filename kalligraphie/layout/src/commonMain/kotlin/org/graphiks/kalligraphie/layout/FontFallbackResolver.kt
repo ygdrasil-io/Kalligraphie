@@ -149,7 +149,7 @@ internal object FontFallbackResolver {
         val requirements = requirementsFor(request.materialization)
         val records = request.fontCatalog.faces.associateBy(FontFaceRecord::id)
         val rejectedAttempts = mutableSetOf<RejectedAttempt>()
-        val instances = mutableMapOf<FontFaceId, FontInstance>()
+        val instances = mutableMapOf<InstanceAccessKey, FontInstance>()
         val shapedGroups = mutableMapOf<GroupSignature, List<ShapedGlyphRun>>()
         val diagnostics = mutableListOf<FontDiagnostic>()
         val fallbackDiagnostics = mutableListOf<FontFallbackDiagnostic>()
@@ -235,7 +235,9 @@ internal object FontFallbackResolver {
                     FontFallbackResolution(
                         units = units,
                         shapedRuns = shaped,
-                        instances = assignments.map(AssignedUnit::instance).distinctBy(FontInstance::key),
+                        // A glyphless layout-only instance must not hide an instance resolved for visible glyphs.
+                        instances = assignments.sortedBy(AssignedUnit::glyphless)
+                            .map(AssignedUnit::instance).distinctBy(FontInstance::key),
                         diagnostics = diagnostics,
                         fallbackDiagnostics = fallbackDiagnostics,
                     ),
@@ -289,7 +291,7 @@ internal object FontFallbackResolver {
         records: Map<FontFaceId, FontFaceRecord>,
         requirements: FontAccessRequirementsSnapshot,
         request: ResolutionRequest,
-        instances: MutableMap<FontFaceId, FontInstance>,
+        instances: MutableMap<InstanceAccessKey, FontInstance>,
         rejectedAttempts: MutableSet<RejectedAttempt>,
         diagnostics: MutableList<FontDiagnostic>,
         fallbackDiagnostics: MutableList<FontFallbackDiagnostic>,
@@ -316,7 +318,8 @@ internal object FontFallbackResolver {
                 accesses.forEach { access -> rejectedAttempts += RejectedAttempt(unit.range, record.id, access) }
                 return@forEach
             }
-            val instance = instances[record.id] ?: run {
+            val instanceAccess = InstanceAccessKey(record.id, candidateRequirements)
+            val instance = instances[instanceAccess] ?: run {
                 val face = when (val resolved = catalog.resolveFace(record.id, candidateRequirements)) {
                     is FontOperationResult.Success -> resolved.value
                     is FontOperationResult.Failure -> {
@@ -332,7 +335,7 @@ internal object FontFallbackResolver {
                     is FontOperationResult.Cancelled -> return CandidateSelection.Cancelled(resolved.diagnostics)
                 }
                 when (val instantiated = face.instantiate(request.fontInstanceDescriptor)) {
-                    is FontOperationResult.Success -> instantiated.value.also { instances[record.id] = it }
+                    is FontOperationResult.Success -> instantiated.value.also { instances[instanceAccess] = it }
                     is FontOperationResult.Failure -> {
                         if (instantiated.error.isTerminal()) return CandidateSelection.Failed(instantiated.error, instantiated.diagnostics)
                         fallbackDiagnostics += request.decision(unit, record.id, FontFallbackStage.Instantiation, FontFallbackReason.InstantiationFailed)
@@ -858,6 +861,12 @@ internal object FontFallbackResolver {
         val record: FontFaceRecord,
         val instance: FontInstance,
         val glyphless: Boolean = false,
+    )
+
+    // Access requirements can affect provider instances even when their geometry keys match.
+    private data class InstanceAccessKey(
+        val faceId: FontFaceId,
+        val requirements: FontAccessRequirementsSnapshot,
     )
 
     private data class ShapingFragment(
