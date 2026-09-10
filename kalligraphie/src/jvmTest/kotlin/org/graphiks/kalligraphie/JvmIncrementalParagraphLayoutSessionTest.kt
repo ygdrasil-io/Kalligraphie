@@ -799,8 +799,8 @@ class JvmIncrementalParagraphLayoutSessionTest {
 
         override fun shape(request: ShapingRequest): FontOperationResult<ShapedGlyphRun> {
             shapeCalls += 1
-            observedRangeStarts += request.range.start
-            observedRanges += request.range
+            observedRangeStarts += request.itemRange.start
+            observedRanges += request.itemRange
             return delegate.shape(request)
         }
 

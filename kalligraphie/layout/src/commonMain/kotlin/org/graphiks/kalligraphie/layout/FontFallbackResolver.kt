@@ -377,7 +377,8 @@ internal object FontFallbackResolver {
             val result = request.shapingBackend.shape(
                 ShapingRequest(
                     snapshot = request.snapshot,
-                    range = fragment.range,
+                    itemRange = fragment.range,
+                    contextRange = request.shapingContextRange,
                     font = first.instance,
                     direction = request.shapingDirection(fragment.bidiLevel),
                     script = org.graphiks.kalligraphie.api.OpenTypeScript(fragment.script),
@@ -683,9 +684,7 @@ internal object FontFallbackResolver {
         candidate: FontFaceId,
         access: FallbackAccess,
         rejectedAttempts: Set<RejectedAttempt>,
-    ): Boolean = rejectedAttempts.none { attempt ->
-        attempt.unitRange == range && attempt.faceId == candidate && attempt.access == access
-    }
+    ): Boolean = RejectedAttempt(range, candidate, access) !in rejectedAttempts
 
     private fun FallbackUnit.hasSameFragmentClassifications(other: FallbackUnit): Boolean =
         fragments.size == other.fragments.size && fragments.zip(other.fragments).all { (left, right) ->

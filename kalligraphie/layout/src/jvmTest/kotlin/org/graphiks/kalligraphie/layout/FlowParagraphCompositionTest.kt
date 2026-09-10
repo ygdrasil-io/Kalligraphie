@@ -175,7 +175,7 @@ class FlowParagraphCompositionTest {
         )
         val boundary = fixture.snapshot.textIndexAtScalarBoundary(3)
         val backend = DistributionRoutingBackend(fixture.request.shapingBackend) { request ->
-            if (request.range.start == boundary) secondary else primary
+            if (request.itemRange.start == boundary) secondary else primary
         }
         val request = fixture.request.withFlowSourceRange(fixture.snapshot.range, shapingBackend = backend)
         val region = FixedRegion(
@@ -258,7 +258,7 @@ class FlowParagraphCompositionTest {
         )
         val boundary = fixture.snapshot.textIndexAtScalarBoundary(3)
         val backend = IdentityRoutingBackend(fixture.request.shapingBackend, legacy) { request ->
-            if (request.range.start == boundary) ShapingBackendIdentity(legacy.semantic, secondary) else legacy
+            if (request.itemRange.start == boundary) ShapingBackendIdentity(legacy.semantic, secondary) else legacy
         }
         val request = fixture.request.withFlowSourceRange(fixture.snapshot.range, shapingBackend = backend)
         val region = FixedRegion(

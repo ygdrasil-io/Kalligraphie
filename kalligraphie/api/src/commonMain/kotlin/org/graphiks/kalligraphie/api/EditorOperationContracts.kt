@@ -185,7 +185,8 @@ private class OperationBoundedShapingBackend(
         if (context.isCancellationRequested()) return FontOperationResult.Cancelled()
         val boundedRequest = ShapingRequest(
             snapshot = request.snapshot,
-            range = request.range,
+            itemRange = request.itemRange,
+            contextRange = request.contextRange,
             font = request.font,
             direction = request.direction,
             script = request.script,

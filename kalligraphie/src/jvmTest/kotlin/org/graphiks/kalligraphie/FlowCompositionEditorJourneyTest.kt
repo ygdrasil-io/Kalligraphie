@@ -262,7 +262,7 @@ class FlowCompositionEditorJourneyTest {
             assertNotNull(result.unmaterializedTail)
             assertTrue(recording.requests.isNotEmpty())
             assertTrue(
-                recording.requests.all { shaped -> shaped.range.endExclusive < fixture.snapshot.range.endExclusive },
+                recording.requests.all { shaped -> shaped.itemRange.endExclusive < fixture.snapshot.range.endExclusive },
                 "A one-line request must not submit the untouched document tail to shaping.",
             )
         } finally {

@@ -427,7 +427,7 @@ public enum class ShapingResourceLimit {
  * observations outside one native shaping call; it does not alter successful shaping semantics.
  */
 public class ShapingResourceProfile(
-    /** Maximum Unicode scalars accepted from the request range. */
+    /** Maximum Unicode scalars accepted from the complete shaping context, including the item. */
     public val maxScalars: Int = Int.MAX_VALUE,
     /** Maximum shaped glyphs accepted before portable output is allocated. */
     public val maxGlyphs: Int = Int.MAX_VALUE,
@@ -453,12 +453,18 @@ public class ShapingResourceProfile(
  * resolved BiDi level, boundary flags, feature policy, and feature overrides are never inferred
  * by this contract. Collections are captured immutably, so requests may be shared between
  * threads when their [font] implementation supports concurrent reads.
+ *
+ * [contextRange] provides surrounding text for joining decisions without authorizing glyphs
+ * outside [itemRange]. A ligature crossing an item boundary must be shaped as a larger item;
+ * it cannot be published with truncated source provenance.
  */
 public class ShapingRequest(
-    /** Immutable canonical text snapshot containing [range]. */
+    /** Immutable canonical text snapshot containing both the item and its shaping context. */
     public val snapshot: TextSnapshot,
-    /** Half-open scalar range to shape. */
-    public val range: TextRange,
+    /** Half-open scalar range whose glyphs and provenance may be published. */
+    public val itemRange: TextRange,
+    /** Surrounding scalar range used for contextual shaping; it must contain [itemRange]. */
+    public val contextRange: TextRange,
     /** Concrete font instance supplying owned OpenType data to a backend. */
     public val font: FontInstance,
     /** Explicit shaping direction compatible with [bidiLevel]. */
@@ -475,9 +481,9 @@ public class ShapingRequest(
     public val language: String,
     /** Resolved UAX #9 embedding level, from 0 through 126. */
     public val bidiLevel: Int,
-    /** Whether the range begins the text context supplied to the shaper. */
+    /** Whether the item begins the real text context; true requires matching start boundaries. */
     public val bot: Boolean,
-    /** Whether the range ends the text context supplied to the shaper. */
+    /** Whether the item ends the real text context; true requires matching end boundaries. */
     public val eot: Boolean,
     /** Explicit, versioned baseline feature policy the selected backend must implement. */
     public val featurePolicy: ShapingFeaturePolicy,
@@ -488,11 +494,39 @@ public class ShapingRequest(
     /** Cooperative cancellation signal observed before portable output is published. */
     public val cancellationToken: CancellationToken = CancellationToken.none,
 ) {
+    /** Compatibility alias for the range whose glyphs are published, excluding surrounding context. */
+    @Deprecated("Use itemRange", ReplaceWith("itemRange"))
+    public val range: TextRange get() = itemRange
+
+    /**
+     * Creates an item with no additional surrounding text, preserving the original named `range`
+     * constructor. Use the primary constructor to retain joining context across item boundaries.
+     */
+    public constructor(
+        snapshot: TextSnapshot,
+        range: TextRange,
+        font: FontInstance,
+        direction: ShapingDirection,
+        script: OpenTypeScript,
+        language: String,
+        bidiLevel: Int,
+        bot: Boolean,
+        eot: Boolean,
+        featurePolicy: ShapingFeaturePolicy,
+        features: List<OpenTypeFeature>,
+        graphemeClusters: List<TextRange>,
+        resourceProfile: ShapingResourceProfile = ShapingResourceProfile.unbounded,
+        cancellationToken: CancellationToken = CancellationToken.none,
+    ) : this(
+        snapshot, range, range, font, direction, script, language, bidiLevel, bot, eot,
+        featurePolicy, features, graphemeClusters, resourceProfile, cancellationToken,
+    )
+
     /** Immutable feature overrides applied after [featurePolicy] in caller-specified deterministic order. */
     public val features: List<OpenTypeFeature> = features.immutableListSnapshot()
 
     /**
-     * Immutable logical partition of [range] induced by its extended grapheme clusters.
+     * Immutable logical partition of [itemRange] induced by its extended grapheme clusters.
      *
      * A script or BiDi itemization boundary can divide an extended grapheme cluster, so an entry
      * may be only a fragment of that cluster. Such a fragment is a shaping boundary only and
@@ -501,14 +535,21 @@ public class ShapingRequest(
     public val graphemeClusters: List<TextRange> = graphemeClusters.immutableListSnapshot()
 
     init {
-        require(snapshot.contains(range)) { "Shaping range must belong to the supplied snapshot." }
+        require(snapshot.contains(itemRange) && snapshot.contains(contextRange)) {
+            "Shaping item and context must belong to the supplied snapshot."
+        }
+        require(contextRange.start <= itemRange.start && contextRange.endExclusive >= itemRange.endExclusive) {
+            "Shaping context must contain the complete item."
+        }
+        require(!bot || itemRange.start == contextRange.start) { "BOT must identify the real context start." }
+        require(!eot || itemRange.endExclusive == contextRange.endExclusive) { "EOT must identify the real context end." }
         require(language.hasBasicLanguageTagSyntax()) { "Language must use non-empty alphanumeric subtags separated by single hyphens." }
         require(bidiLevel in 0..126) { "BiDi level must be between 0 and 126." }
         require(direction.matches(bidiLevel)) { "Shaping direction must agree with the resolved BiDi level." }
         require(features.map(OpenTypeFeature::tag).distinct().size == features.size) {
             "Shaping features must not repeat a tag."
         }
-        requireTextPartition(range, this.graphemeClusters, "Grapheme clusters")
+        requireTextPartition(itemRange, this.graphemeClusters, "Grapheme clusters")
     }
 }
 

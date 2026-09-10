@@ -42,6 +42,118 @@ import kotlin.test.assertTrue
 class HarfBuzzJvmBackendTest {
     private val backends = mutableListOf<ShapingBackend>()
 
+    @Test
+    fun shapesAnItemWithItsArabicParagraphContext() {
+        val backend = backend()
+        val prepared = text("ببب")
+        val font = fontInstance("/fonts/dejavu/DejaVuSans.ttf", "DejaVu Sans")
+        val item = range(prepared, 1, 2)
+        fun shapeItem(itemRange: TextRange, contextRange: TextRange) = backend.shape(
+            request(
+                prepared, font, ShapingDirection.RIGHT_TO_LEFT, OpenTypeScript("Arab"), "ar", 1,
+                itemRange = itemRange, contextRange = contextRange,
+                graphemeRanges = prepared.scalarRanges().filter { it.start >= itemRange.start && it.endExclusive <= itemRange.endExclusive },
+            ),
+        ).successValue()
+
+        val full = shapeItem(prepared.snapshot.range, prepared.snapshot.range)
+        val isolated = shapeItem(item, item)
+        val contextual = shapeItem(item, prepared.snapshot.range)
+        val fullToken = full.clusters.single { it.sourceRange == item }.token
+        val medial = full.glyphs.single { fullToken in it.clusterTokens }
+
+        assertEquals(GlyphId(5260), medial.glyphId)
+        assertEquals(medial.glyphId, contextual.glyphs.single().glyphId)
+        assertTrue(isolated.glyphs.single().glyphId != contextual.glyphs.single().glyphId)
+        assertTrue(medial.safetyFlags.unsafeToConcat)
+        assertEquals(medial.safetyFlags.unsafeToConcat, contextual.glyphs.single().safetyFlags.unsafeToConcat)
+        // HarfBuzz conservatively marks even the isolated joining letter unsafe to concatenate.
+        assertEquals(isolated.glyphs.single().safetyFlags.unsafeToConcat, contextual.glyphs.single().safetyFlags.unsafeToConcat)
+        assertEquals(item, contextual.range)
+        assertEquals(listOf(item), contextual.clusters.map { it.sourceRange })
+        assertEquals(listOf(item), contextual.clusters.single().scalarRanges)
+        assertEquals(listOf(ShaperClusterToken(0)), contextual.glyphs.single().clusterTokens)
+    }
+
+    @Test
+    fun aLigatureAtTheItemBoundaryNeverPublishesPartialProvenance() {
+        val backend = backend()
+        val prepared = text("fi")
+        val font = fontInstance("/fonts/dejavu/DejaVuSans.ttf", "DejaVu Sans")
+        val full = backend.shape(request(prepared, font, ShapingDirection.LEFT_TO_RIGHT, OpenTypeScript("Latn"), "en", 0)).successValue()
+        assertEquals(listOf(GlyphId(5042)), full.glyphs.map { it.glyphId })
+        assertEquals(listOf(prepared.snapshot.range), full.clusters.map { it.sourceRange })
+
+        listOf(0 to GlyphId(73), 1 to GlyphId(76)).forEach { (offset, expectedGlyph) ->
+            val item = range(prepared, offset, offset + 1)
+            val shaped = backend.shape(
+                request(
+                    prepared, font, ShapingDirection.LEFT_TO_RIGHT, OpenTypeScript("Latn"), "en", 0,
+                    itemRange = item, contextRange = prepared.snapshot.range, graphemeRanges = listOf(item),
+                ),
+            ).successValue()
+            assertEquals(listOf(expectedGlyph), shaped.glyphs.map { it.glyphId })
+            assertEquals(listOf(item), shaped.clusters.map { it.sourceRange })
+            assertEquals(listOf(item), shaped.clusters.single().scalarRanges)
+            assertEquals(listOf(ShaperClusterToken(0)), shaped.glyphs.single().clusterTokens)
+        }
+    }
+
+    @Test
+    fun mixedScriptLanguageAndBidiContextKeepsOnlyTheSelectedItem() {
+        val backend = backend()
+        val prepared = text("😀fi ببب a")
+        val font = fontInstance("/fonts/dejavu/DejaVuSans.ttf", "DejaVu Sans")
+        val item = range(prepared, 5, 6)
+        val shaped = backend.shape(
+            request(
+                prepared, font, ShapingDirection.RIGHT_TO_LEFT, OpenTypeScript("Arab"), "ar", 1,
+                itemRange = item, contextRange = prepared.snapshot.range, graphemeRanges = listOf(item),
+            ),
+        ).successValue()
+        assertEquals(listOf(GlyphId(5260)), shaped.glyphs.map { it.glyphId })
+        assertEquals("ar", shaped.language)
+        assertEquals(OpenTypeScript("Arab"), shaped.script)
+        assertEquals(1, shaped.bidiLevel)
+        assertEquals(listOf(item), shaped.clusters.map { it.sourceRange })
+        assertEquals(listOf(item), shaped.clusters.single().scalarRanges)
+        assertEquals(listOf(ShaperClusterToken(0)), shaped.glyphs.single().clusterTokens)
+        listOf(
+            Triple(range(prepared, 1, 3), "en", GlyphId(5042)),
+            Triple(range(prepared, 8, 9), "fr", GlyphId(68)),
+        ).forEach { (latinItem, language, expectedGlyph) ->
+            val latin = backend.shape(
+                request(
+                    prepared, font, ShapingDirection.LEFT_TO_RIGHT, OpenTypeScript("Latn"), language, 0,
+                    itemRange = latinItem, contextRange = prepared.snapshot.range,
+                    graphemeRanges = prepared.scalarRanges().filter { it.start >= latinItem.start && it.endExclusive <= latinItem.endExclusive },
+                ),
+            ).successValue()
+            assertEquals(listOf(expectedGlyph), latin.glyphs.map { it.glyphId })
+            assertEquals(language, latin.language)
+            assertEquals(0, latin.bidiLevel)
+            assertEquals(listOf(latinItem), latin.clusters.map { it.sourceRange })
+            assertEquals(listOf(ShaperClusterToken(0)), latin.glyphs.single().clusterTokens)
+        }
+    }
+
+    @Test
+    fun anArabicItemCannotBypassTheScalarBudgetWithItsSurroundingContext() {
+        val prepared = text("ببب")
+        val item = range(prepared, 1, 2)
+        val result = backend().shape(
+            request(
+                prepared, fontInstance("/fonts/dejavu/DejaVuSans.ttf", "DejaVu Sans"),
+                ShapingDirection.RIGHT_TO_LEFT, OpenTypeScript("Arab"), "ar", 1,
+                itemRange = item, contextRange = prepared.snapshot.range, graphemeRanges = listOf(item),
+                resourceProfile = ShapingResourceProfile(maxScalars = 1),
+            ),
+        )
+        val error = assertIs<FontError.ShapingResourceLimitExceeded>(assertIs<FontOperationResult.Failure>(result).error)
+        assertEquals(ShapingResourceLimit.SCALARS, error.limit)
+        assertEquals(3, error.observed)
+    }
+
     @AfterTest
     fun closeOpenedBackends() {
         backends.asReversed().forEach { backend ->
@@ -739,17 +851,20 @@ class HarfBuzzJvmBackendTest {
         graphemeRanges: List<TextRange> = prepared.scalarRanges(),
         resourceProfile: ShapingResourceProfile = ShapingResourceProfile.unbounded,
         cancellationToken: CancellationToken = CancellationToken.none,
+        itemRange: TextRange = prepared.snapshot.range,
+        contextRange: TextRange = itemRange,
     ): ShapingRequest =
         ShapingRequest(
             snapshot = prepared.snapshot,
-            range = prepared.snapshot.range,
+            itemRange = itemRange,
+            contextRange = contextRange,
             font = font,
             direction = direction,
             script = script,
             language = language,
             bidiLevel = bidiLevel,
-            bot = true,
-            eot = true,
+            bot = itemRange.start == contextRange.start,
+            eot = itemRange.endExclusive == contextRange.endExclusive,
             featurePolicy = featurePolicy,
             features = features,
             graphemeClusters = graphemeRanges,

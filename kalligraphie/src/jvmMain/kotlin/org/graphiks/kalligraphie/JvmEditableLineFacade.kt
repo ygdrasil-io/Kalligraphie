@@ -440,7 +440,8 @@ public object JvmEditableLineFacade {
                 val shaped = backend.shape(
                     ShapingRequest(
                         snapshot = request.snapshot,
-                        range = segment.range,
+                        itemRange = segment.range,
+                        contextRange = segment.range,
                         font = request.font,
                         direction = segment.direction,
                         script = OpenTypeScript(segment.script),

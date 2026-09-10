@@ -210,10 +210,10 @@ class EditableParagraphCompositionTest {
         )
         val finalEnd = range(fixture.snapshot, 0, 11).endExclusive
         assertTrue(fixture.recordingBackend!!.requests.any { request ->
-            request.range == range(fixture.snapshot, 3, 11) && request.eot
+            request.itemRange == range(fixture.snapshot, 3, 11) && request.eot
         })
         assertTrue(fixture.recordingBackend.requests.none { request ->
-            request.range == TextRange(fixture.snapshot.range.start, finalEnd) && request.eot
+            request.itemRange == TextRange(fixture.snapshot.range.start, finalEnd) && request.eot
         })
         val finalRun = result.lines.first().line.positionedGlyphRuns.single().sourceRun
         assertEquals(
@@ -242,7 +242,7 @@ class EditableParagraphCompositionTest {
         )
         val secondaryStart = fixture.snapshot.textIndexAtScalarBoundary(3)
         val routedBackend = DistributionRoutingBackend(fixture.request.shapingBackend) { shapingRequest ->
-            if (shapingRequest.range.start == secondaryStart) secondary else primary
+            if (shapingRequest.itemRange.start == secondaryStart) secondary else primary
         }
 
         val result = layout(copyRequest(fixture.request, shapingBackend = routedBackend))
