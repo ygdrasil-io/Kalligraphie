@@ -699,9 +699,9 @@ internal class HarfBuzzNativeLibrary(
         try {
             configureBuffer(arena, buffer, request)
             val scalarTable = mutableListOf<ContextScalar>()
+            val itemScalarRanges = mutableListOf<TextRange>()
             val textLength = request.snapshot.scalarCount(request.contextRange)
             val text = arena.allocate(ValueLayout.JAVA_INT, textLength.toLong())
-            var itemLength = 0
             var itemOffset = 0
             request.snapshot.forEachScalar(request.contextRange) { scalar, scalarRange ->
                 val contextToken = scalarTable.size
@@ -710,14 +710,21 @@ internal class HarfBuzzNativeLibrary(
                 val belongsToItem = scalarRange.start >= request.itemRange.start &&
                     scalarRange.endExclusive <= request.itemRange.endExclusive
                 if (scalarRange.endExclusive <= request.itemRange.start) itemOffset += 1
+                val itemToken = if (belongsToItem) {
+                    val token = ShaperClusterToken(itemScalarRanges.size)
+                    itemScalarRanges += scalarRange
+                    token
+                } else {
+                    null
+                }
                 scalarTable += ContextScalar(
                     sourceRange = scalarRange,
-                    itemToken = if (belongsToItem) ShaperClusterToken(itemLength++) else null,
+                    itemToken = itemToken,
                 )
             }
             // HarfBuzz retains pre/post context for joining, but only adds the item to the
             // glyph buffer. Cross-boundary ligatures require a larger item before shaping.
-            callVoid(bufferAddUtf32, buffer, text, textLength, itemOffset, itemLength)
+            callVoid(bufferAddUtf32, buffer, text, textLength, itemOffset, itemScalarRanges.size)
             observeCancellation(request)
             val features = featureArray(arena, request)
             val shapers = explicitOpenTypeShapers(arena)
@@ -734,7 +741,7 @@ internal class HarfBuzzNativeLibrary(
             check(accepted) {
                 "HarfBuzz did not accept the explicit OpenType shaper configuration."
             }
-            shapedRun(arena, request, preparedFont.font, buffer, scalarTable, preparedFont.designToLayout)
+            shapedRun(arena, request, preparedFont.font, buffer, scalarTable, itemScalarRanges, preparedFont.designToLayout)
         } finally {
             callVoid(bufferDestroy, buffer)
         }
@@ -781,6 +788,7 @@ internal class HarfBuzzNativeLibrary(
         font: MemorySegment,
         buffer: MemorySegment,
         scalarTable: List<ContextScalar>,
+        itemScalarRanges: List<TextRange>,
         designToLayout: DesignToLayoutScale,
     ): ShapedGlyphRun {
         val glyphCount = int(bufferGetLength, buffer)
@@ -809,8 +817,7 @@ internal class HarfBuzzNativeLibrary(
                 yOffset = positions.get(ValueLayout.JAVA_INT, positionOffset + 12),
             )
         }
-        val scalarRanges = scalarTable.filter { it.itemToken != null }.map(ContextScalar::sourceRange)
-        val clusters = buildClusters(request, scalarRanges, glyphRecords)
+        val clusters = buildClusters(request, itemScalarRanges, glyphRecords)
         val clustersByToken = clusters.associateBy { cluster -> cluster.token }
         val glyphs = glyphRecords.mapIndexed { glyphIndex, record ->
             observeCancellation(request, glyphIndex)
