@@ -294,18 +294,21 @@ internal object FontFallbackResolver {
         diagnostics: MutableList<FontDiagnostic>,
         fallbackDiagnostics: MutableList<FontFallbackDiagnostic>,
     ): CandidateSelection {
+        val glyphless = unit.isGlyphless(request.snapshot)
+        // Controls need an instance for layout, but never negotiate a glyph representation.
+        val candidateRequirements = if (glyphless) FontAccessRequirementsSnapshot.layoutOnly() else requirements
         policy.candidates.forEach { candidate ->
             if (request.cancellationToken.isCancellationRequested()) {
                 return CandidateSelection.Cancelled(emptyList())
             }
             val record = records.getValue(candidate.faceId)
-            val accesses = requirements.fallbackAccesses()
+            val accesses = candidateRequirements.fallbackAccesses()
             if (!accesses.any { access -> unit.isCompatibleWith(record.id, access, rejectedAttempts) }) return@forEach
-            if (!supports(record.capabilities, requirements)) {
+            if (!supports(record.capabilities, candidateRequirements)) {
                 if (!record.capabilities.characterMapping || !record.capabilities.shaping) {
                     fallbackDiagnostics += request.decision(unit, record.id, FontFallbackStage.FaceResolution, FontFallbackReason.FaceUnavailable)
                 } else {
-                    requirements.acceptedProfiles.forEach { profile ->
+                    candidateRequirements.acceptedProfiles.forEach { profile ->
                         fallbackDiagnostics += request.decision(unit, record.id, FontFallbackStage.Materialization,
                             FontFallbackReason.RepresentationUnavailable, profile)
                     }
@@ -314,7 +317,7 @@ internal object FontFallbackResolver {
                 return@forEach
             }
             val instance = instances[record.id] ?: run {
-                val face = when (val resolved = catalog.resolveFace(record.id, requirements)) {
+                val face = when (val resolved = catalog.resolveFace(record.id, candidateRequirements)) {
                     is FontOperationResult.Success -> resolved.value
                     is FontOperationResult.Failure -> {
                         if (resolved.error.isTerminal()) return CandidateSelection.Failed(resolved.error, resolved.diagnostics)
@@ -343,7 +346,7 @@ internal object FontFallbackResolver {
                     is FontOperationResult.Cancelled -> return CandidateSelection.Cancelled(instantiated.diagnostics)
                 }
             }
-            if (unit.isGlyphless(request.snapshot)) {
+            if (glyphless) {
                 return CandidateSelection.Selected(AssignedUnit(unit, record, instance, glyphless = true))
             }
             when (val mapping = mapsAllRequiredScalars(unit, request, instance)) {

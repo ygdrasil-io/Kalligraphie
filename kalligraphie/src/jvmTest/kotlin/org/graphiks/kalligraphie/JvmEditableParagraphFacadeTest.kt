@@ -162,6 +162,27 @@ class JvmEditableParagraphFacadeTest {
     }
 
     @Test
+    fun controlOnlySkipsRepresentationRejectionsBeforeSelectingFace() {
+        val fixture = diagnosticFixture("\n", colorLastResort = true)
+        val resolver = assertIs<FontOperationResult.Success<FontAssetResolverHandle>>(fixture.catalog.openAssetResolver()).value
+        try {
+            val result = assertIs<ParagraphLayoutResult.Success>(JvmEditableParagraphFacade.layout(request(
+                fixture, constraints(10_000f, 0f, 2_000f), materialization = EditableLineMaterialization.Renderable(
+                    resolver, org.graphiks.kalligraphie.api.FontRenderVariantSnapshot.default,
+                    FontAccessRequirementsSnapshot.renderable(listOf(diagnosticPaintProfile())),
+                ),
+            )))
+            val decisions = result.layout.lines.flatMap { it.diagnostics }.mapNotNull { it.fallbackDiagnostic }
+            assertTrue(decisions.none { it.reason == FontFallbackReason.RepresentationUnavailable })
+            assertTrue(decisions.all { it.representationProfile == null && it.profileRank == null })
+            assertEquals(listOf(fixture.latinFace), result.layout.lines.flatMap { it.positionedGlyphRuns }
+                .map { it.fontInstanceKey.face }.distinct())
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
     fun keepsRejectedProfileBeforeSuccessfulMonoFaceLastResortSelection() {
         val fixture = fontFixture("A\n", listOf(FontFixture("liberation/LiberationSans-Regular.ttf", "Liberation Sans")))
         val resolver = assertIs<FontOperationResult.Success<FontAssetResolverHandle>>(fixture.catalog.openAssetResolver()).value
