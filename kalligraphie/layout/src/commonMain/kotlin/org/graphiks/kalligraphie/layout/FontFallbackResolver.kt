@@ -235,7 +235,7 @@ internal object FontFallbackResolver {
                     }
                     is Attempt.Rejected -> {
                         diagnostics += attempted.diagnostics
-                        rejected = group
+                        rejected = attempted.units ?: group
                     }
 
                     is Attempt.Failed -> return FontOperationResult.Failure(
@@ -449,8 +449,16 @@ internal object FontFallbackResolver {
         fallbackDiagnostics: MutableList<FontFallbackDiagnostic>,
     ): Attempt {
         val first = group.first()
-        fun reject(stage: FontFallbackStage, reason: FontFallbackReason, profile: GlyphRepresentationProfile? = null) {
-            group.forEach { assigned ->
+        fun contributors(ranges: List<TextRange>): List<AssignedUnit> = group.filter { assigned ->
+            ranges.any { range -> intersection(assigned.unit.range, range) != null }
+        }
+        fun reject(
+            stage: FontFallbackStage,
+            reason: FontFallbackReason,
+            profile: GlyphRepresentationProfile? = null,
+            units: List<AssignedUnit> = group,
+        ) {
+            units.forEach { assigned ->
                 fallbackDiagnostics += request.decision(assigned.unit, assigned.record.id, stage, reason, profile)
             }
         }
@@ -503,11 +511,14 @@ internal object FontFallbackResolver {
             }
             val materialization = request.materialization
             if (materialization is EditableLineMaterialization.Renderable) {
-                when (val validation = validateMaterialization(fragmentRun, first.instance, materialization, request, proofs, pool) { reason, profile ->
-                    reject(FontFallbackStage.Materialization, reason, profile)
+                when (val validation = validateMaterialization(fragmentRun, first.instance, materialization, request, proofs, pool) { reason, profile, ranges ->
+                    reject(FontFallbackStage.Materialization, reason, profile, contributors(ranges))
                 }) {
                     Validation.Valid -> Unit
-                    is Validation.Rejected -> return Attempt.Rejected(validation.diagnostics)
+                    is Validation.Rejected -> return Attempt.Rejected(
+                        validation.diagnostics,
+                        contributors(validation.ranges.ifEmpty { listOf(fragmentRun.range) }),
+                    )
                     is Validation.Failed -> return Attempt.Failed(validation.error, validation.diagnostics)
                     is Validation.Cancelled -> return Attempt.Cancelled(validation.diagnostics)
                 }
@@ -602,7 +613,7 @@ internal object FontFallbackResolver {
         request: ResolutionRequest,
         proofs: GlyphMaterializationProofs,
         pool: OperationRenderAssetPool,
-        onRejection: (FontFallbackReason, GlyphRepresentationProfile) -> Unit,
+        onRejection: (FontFallbackReason, GlyphRepresentationProfile, List<TextRange>) -> Unit,
     ): Validation {
         if (
             materialization.requirements.acceptedProfiles.size == 1 &&
@@ -612,6 +623,7 @@ internal object FontFallbackResolver {
         }
         if (materialization.requirements.acceptedProfiles.size > 1) {
             var firstRejection: Validation.Rejected? = null
+            val rejectedRanges = mutableListOf<TextRange>()
             for (profile in materialization.requirements.acceptedProfiles) {
                 val profileMaterialization = EditableLineMaterialization.Renderable(
                     resolver = materialization.resolver,
@@ -623,12 +635,15 @@ internal object FontFallbackResolver {
                 )
                 when (val validation = validateMaterialization(shaped, instance, profileMaterialization, request, proofs, pool, onRejection)) {
                     Validation.Valid -> return Validation.Valid
-                    is Validation.Rejected -> if (firstRejection == null) firstRejection = validation
+                    is Validation.Rejected -> {
+                        if (firstRejection == null) firstRejection = validation
+                        rejectedRanges += validation.ranges
+                    }
                     is Validation.Failed -> return validation
                     is Validation.Cancelled -> return validation
                 }
             }
-            return firstRejection ?: Validation.Rejected(
+            return firstRejection?.copy(ranges = rejectedRanges.distinct()) ?: Validation.Rejected(
                 listOf(rejectionDiagnostic("No accepted representation profile can certify the final shaped glyphs.")),
             )
         }
@@ -644,7 +659,7 @@ internal object FontFallbackResolver {
                 if (pool.isTerminalMaterializationFailure(acquired)) {
                     return Validation.Failed(acquired.error, acquired.diagnostics)
                 }
-                onRejection(acquired.error.materializationReason(), materialization.requirements.acceptedProfiles.single())
+                onRejection(acquired.error.materializationReason(), materialization.requirements.acceptedProfiles.single(), listOf(shaped.range))
                 return Validation.Rejected(acquired.diagnostics + acquired.error.toDiagnostic())
             }
             is FontOperationResult.Cancelled -> return Validation.Cancelled(acquired.diagnostics)
@@ -700,10 +715,22 @@ internal object FontFallbackResolver {
                     }
                     is FontOperationResult.Cancelled -> validation = Validation.Cancelled(resolved.diagnostics)
                 }
+                val rejected = validation as? Validation.Rejected
+                if (rejected != null) {
+                    // Every occurrence of the failed glyph contributes, including ligatures
+                    // whose cluster mapping spans several indivisible fallback units.
+                    val tokens = shaped.glyphs.filter { it.glyphId == glyph.glyphId }
+                        .flatMap { it.clusterTokens }.toSet()
+                    validation = rejected.copy(ranges = shaped.clusters.filter { it.token in tokens }.map { it.sourceRange })
+                }
             }
         }
         if (validation == Validation.Valid) proofs.record(asset.key, routes)
-        if (validation is Validation.Rejected) onRejection(rejectionReason, materialization.requirements.acceptedProfiles.single())
+        if (validation is Validation.Rejected) onRejection(
+            rejectionReason,
+            materialization.requirements.acceptedProfiles.single(),
+            validation.ranges.ifEmpty { listOf(shaped.range) },
+        )
         return validation
     }
 
@@ -930,14 +957,14 @@ internal object FontFallbackResolver {
 
     private sealed interface Attempt {
         data class Success(val runs: List<ShapedGlyphRun>) : Attempt
-        data class Rejected(val diagnostics: List<FontDiagnostic>) : Attempt
+        data class Rejected(val diagnostics: List<FontDiagnostic>, val units: List<AssignedUnit>? = null) : Attempt
         data class Failed(val error: FontError, val diagnostics: List<FontDiagnostic>) : Attempt
         data class Cancelled(val diagnostics: List<FontDiagnostic>) : Attempt
     }
 
     private sealed interface Validation {
         data object Valid : Validation
-        data class Rejected(val diagnostics: List<FontDiagnostic>) : Validation
+        data class Rejected(val diagnostics: List<FontDiagnostic>, val ranges: List<TextRange> = emptyList()) : Validation
         data class Failed(val error: FontError, val diagnostics: List<FontDiagnostic>) : Validation
         data class Cancelled(val diagnostics: List<FontDiagnostic>) : Validation
     }

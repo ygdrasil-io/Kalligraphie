@@ -49,17 +49,6 @@ internal class OperationRenderAssetPool(
         )
         assets[key]?.let { return FontOperationResult.Success(it) }
 
-        val observedAssets = assets.size.toLong() + 1L
-        if (observedAssets > profile.maxLiveAssets.toLong()) {
-            return operationLimitFailure(
-                EditorOperationLimitExceeded(
-                    EditorOperationLimitKind.MATERIALIZATION_ASSETS,
-                    profile.maxLiveAssets.toLong(),
-                    observedAssets,
-                ),
-            )
-        }
-
         val estimate = if (profile.maxEstimatedAssetBytes == Long.MAX_VALUE) {
             0L
         } else {
@@ -73,6 +62,18 @@ internal class OperationRenderAssetPool(
                 is FontOperationResult.Failure -> return estimated
                 is FontOperationResult.Cancelled -> return estimated
             }
+        }
+        // An unsupported profile is a local rejection, even when all live slots
+        // are occupied. Estimate before admission, without opening an asset.
+        val observedAssets = assets.size.toLong() + 1L
+        if (observedAssets > profile.maxLiveAssets.toLong()) {
+            return operationLimitFailure(
+                EditorOperationLimitExceeded(
+                    EditorOperationLimitKind.MATERIALIZATION_ASSETS,
+                    profile.maxLiveAssets.toLong(),
+                    observedAssets,
+                ),
+            )
         }
         val observedBytes = saturatedAdd(estimatedAssetBytes, estimate)
         if (observedBytes > profile.maxEstimatedAssetBytes) {

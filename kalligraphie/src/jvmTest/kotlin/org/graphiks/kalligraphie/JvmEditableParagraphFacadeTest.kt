@@ -260,7 +260,7 @@ class JvmEditableParagraphFacadeTest {
 
     @Test
     fun materializationFailureForOneUnitKeepsNeighboringRealRunsExactly() {
-        val fixture = fontFixture("A\u044BA", listOf(
+        val fixture = fontFixture("АыА", listOf(
             FontFixture("dejavu/DejaVuSans.ttf", "DejaVu Sans"),
             FontFixture("liberation/LiberationSans-Regular.ttf", "Liberation Sans"),
         ))
@@ -294,6 +294,15 @@ class JvmEditableParagraphFacadeTest {
 
             assertEquals(fixture.latinFace, glyphAt(baseline, 1).first)
             assertEquals(fixture.arabicFace, glyphAt(fallback, 1).first)
+            assertTrue(glyphAt(baseline, 1).second.shapedGlyph.glyphId != glyphAt(fallback, 1).second.shapedGlyph.glyphId)
+            assertTrue(glyphAt(baseline, 1).second.advance != glyphAt(fallback, 1).second.advance)
+            assertTrue(baseline.diagnostics.mapNotNull { it.fallbackDiagnostic }.isEmpty())
+            val rejections = fallback.diagnostics.mapNotNull { it.fallbackDiagnostic }
+            assertTrue(rejections.isNotEmpty())
+            assertTrue(rejections.all { it.range == range(fixture.snapshot, 1, 2) })
+            assertTrue(rejections.any {
+                it.faceId == fixture.latinFace && it.stage == FontFallbackStage.Materialization
+            })
             listOf(0, 2).forEach { scalar ->
                 val expected = glyphAt(baseline, scalar)
                 val actual = glyphAt(fallback, scalar)
@@ -389,7 +398,7 @@ class JvmEditableParagraphFacadeTest {
                     ),
                     operationProfile = EditorOperationProfile(
                         materializationResourceProfile = MaterializationResourceProfile(
-                            maxLiveAssets = 2,
+                            maxLiveAssets = 1,
                             maxEstimatedAssetBytes = 10_000_000L,
                         ),
                     ),
