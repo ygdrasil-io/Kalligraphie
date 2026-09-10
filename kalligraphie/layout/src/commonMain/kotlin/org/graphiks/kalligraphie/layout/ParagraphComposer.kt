@@ -198,7 +198,17 @@ public object ParagraphComposer : ParagraphLayouter {
         val pool = OperationRenderAssetPool(context.profile.materializationResourceProfile)
         var closeDiagnostics = emptyList<org.graphiks.kalligraphie.api.FontDiagnostic>()
         val result = try {
-            compose(request, materialization, context, GlyphMaterializationProofs(), pool)
+            try {
+                compose(request, materialization, context, GlyphMaterializationProofs(), pool)
+            } catch (limit: EditorOperationLimitReached) {
+                ParagraphCompositionResult.Failure(EditableLineError.OperationLimitExceeded(limit.exceeded))
+            } catch (overflow: ParagraphGeometryOverflowException) {
+                ParagraphCompositionResult.Failure(
+                    EditableLineError.GeometryOverflow(overflow.message ?: "Paragraph geometry overflowed."),
+                )
+            } catch (terminal: ParagraphTerminalMaterializationFailure) {
+                ParagraphCompositionResult.Failure(terminal.error, terminal.diagnostics)
+            }
         } finally {
             closeDiagnostics = pool.close()
         }
@@ -412,14 +422,24 @@ public object ParagraphComposer : ParagraphLayouter {
         val pool = OperationRenderAssetPool(context.profile.materializationResourceProfile)
         var closeDiagnostics = emptyList<org.graphiks.kalligraphie.api.FontDiagnostic>()
         val result = try {
-            composeFirstLineBounded(
-                request,
-                materialization,
-                maximumEndExclusive,
-                context,
-                GlyphMaterializationProofs(),
-                pool,
-            )
+            try {
+                composeFirstLineBounded(
+                    request,
+                    materialization,
+                    maximumEndExclusive,
+                    context,
+                    GlyphMaterializationProofs(),
+                    pool,
+                )
+            } catch (limit: EditorOperationLimitReached) {
+                ParagraphCompositionResult.Failure(EditableLineError.OperationLimitExceeded(limit.exceeded))
+            } catch (overflow: ParagraphGeometryOverflowException) {
+                ParagraphCompositionResult.Failure(
+                    EditableLineError.GeometryOverflow(overflow.message ?: "Paragraph geometry overflowed."),
+                )
+            } catch (terminal: ParagraphTerminalMaterializationFailure) {
+                ParagraphCompositionResult.Failure(terminal.error, terminal.diagnostics)
+            }
         } finally {
             closeDiagnostics = pool.close()
         }
@@ -1596,8 +1616,7 @@ public object ParagraphComposer : ParagraphLayouter {
                     prefixInstances[boundary] = finalized.fontInstances
                 }
                 is FinalizationResult.Failure -> {
-                    val limit = finalized.error as? EditableLineError.OperationLimitExceeded
-                    if (limit != null) throw EditorOperationLimitReached(limit.limit)
+                    finalized.throwIfTerminalMaterializationFailure()
                 }
                 else -> Unit
             }
@@ -1708,11 +1727,24 @@ public object ParagraphComposer : ParagraphLayouter {
                 TruncatedLine(finalized.line, finalized.fontInstances, ParagraphTruncation(hiddenRange, anchor, side))
             }
             is FinalizationResult.Failure -> {
-                val limit = finalized.error as? EditableLineError.OperationLimitExceeded
-                if (limit != null) throw EditorOperationLimitReached(limit.limit)
+                finalized.throwIfTerminalMaterializationFailure()
                 null
             }
             else -> null
+        }
+    }
+
+    private fun FinalizationResult.Failure.throwIfTerminalMaterializationFailure() {
+        val operationLimit = error as? EditableLineError.OperationLimitExceeded
+        if (operationLimit != null) throw EditorOperationLimitReached(operationLimit.limit)
+        val fontError = when (val failure = error) {
+            is EditableLineError.FontMaterializationFailure -> failure.fontError
+            is EditableLineError.FontResolutionFailure -> failure.fontError
+            is EditableLineError.ShapingFailure -> failure.fontError
+            else -> null
+        }
+        if (fontError?.isTerminalMaterializationFailure() == true) {
+            throw ParagraphTerminalMaterializationFailure(error, diagnostics)
         }
     }
 
@@ -2339,6 +2371,11 @@ private fun FontError.toEditableResolutionError(): EditableLineError = when (thi
 }
 
 internal class ParagraphGeometryOverflowException(message: String) : IllegalStateException(message)
+
+private class ParagraphTerminalMaterializationFailure(
+    val error: EditableLineError,
+    val diagnostics: List<EditableLineDiagnostic>,
+) : IllegalStateException(error.message)
 
     private fun <Element> Iterable<Element>.immutableSnapshot(): List<Element> = ParagraphImmutableList(toList())
 

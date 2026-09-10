@@ -367,6 +367,87 @@ class JvmEditableParagraphFacadeTest {
     }
 
     @Test
+    fun finiteAssetByteBudgetAllowsRealPaintToOutlineFallback() {
+        val fixture = fontFixture(
+            "A",
+            listOf(FontFixture("liberation/LiberationSans-Regular.ttf", "Liberation Sans")),
+        )
+        val resolver = assertIs<FontOperationResult.Success<FontAssetResolverHandle>>(
+            fixture.catalog.openAssetResolver(),
+        ).value
+        try {
+            val outcome = JvmEditableParagraphFacade.layout(
+                request(
+                    fixture,
+                    constraints(width = 10_000f, top = 0f, height = 1_200f),
+                    materialization = EditableLineMaterialization.Renderable(
+                        resolver = resolver,
+                        renderVariant = org.graphiks.kalligraphie.api.FontRenderVariantSnapshot.default,
+                        requirements = FontAccessRequirementsSnapshot.renderable(
+                            listOf(diagnosticPaintProfile(), diagnosticOutlineProfile()),
+                        ),
+                    ),
+                    operationProfile = EditorOperationProfile(
+                        materializationResourceProfile = MaterializationResourceProfile(
+                            maxLiveAssets = 2,
+                            maxEstimatedAssetBytes = 10_000_000L,
+                        ),
+                    ),
+                ),
+            )
+            val result = assertIs<ParagraphLayoutResult.Success>(
+                outcome,
+                (outcome as? ParagraphLayoutResult.Failure)?.error?.toString(),
+            )
+            val glyphs = result.layout.lines.flatMap { line ->
+                line.positionedGlyphRuns.flatMap { run -> run.glyphs }
+            }
+            assertTrue(glyphs.isNotEmpty())
+            assertTrue(glyphs.all { glyph -> glyph.materializationCertificate?.route == GlyphMaterializationRoute.OUTLINE })
+        } finally {
+            assertIs<FontOperationResult.Success<Unit>>(resolver.close())
+        }
+    }
+
+    @Test
+    fun colorParagraphRejectsBeforeConservativeExpandedPaintAssetBudget() {
+        val fixture = fontFixture(
+            "A",
+            listOf(FontFixture("bungee-color/BungeeColor-Regular.ttf", "Bungee Color")),
+        )
+        val resolver = assertIs<FontOperationResult.Success<FontAssetResolverHandle>>(
+            fixture.catalog.openAssetResolver(),
+        ).value
+        try {
+            val result = assertIs<ParagraphLayoutResult.Failure>(
+                JvmEditableParagraphFacade.layout(
+                    request(
+                        fixture,
+                        constraints(width = 10_000f, top = 0f, height = 1_200f),
+                        materialization = EditableLineMaterialization.Renderable(
+                            resolver = resolver,
+                            renderVariant = org.graphiks.kalligraphie.api.FontRenderVariantSnapshot.default,
+                            requirements = FontAccessRequirementsSnapshot.renderable(listOf(diagnosticPaintProfile())),
+                        ),
+                        operationProfile = EditorOperationProfile(
+                            materializationResourceProfile = MaterializationResourceProfile(
+                                maxLiveAssets = 1,
+                                maxEstimatedAssetBytes = 3_000_000L,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            val exceeded = assertIs<ParagraphLayoutError.OperationLimitExceeded>(result.error).limit
+            assertEquals(EditorOperationLimitKind.MATERIALIZATION_ASSET_BYTES, exceeded.kind)
+            assertEquals(3_000_000L, exceeded.maximum)
+            assertTrue(exceeded.observed > exceeded.maximum)
+        } finally {
+            assertIs<FontOperationResult.Success<Unit>>(resolver.close())
+        }
+    }
+
+    @Test
     fun publicFacadeCertifiesLatinHebrewAndArabicFallbackFromMainArtifact() {
         val latin = mainArtifactFontSource("gdef-kern/GdefKerningFixture.ttf", "GDEF kerning fixture")
         val hebrew = mainArtifactFontSource("liberation/LiberationSans-Regular.ttf", "Liberation Sans Regular")

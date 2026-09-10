@@ -156,7 +156,7 @@ internal data class TrueTypeFontInstance(
         profile: GlyphRepresentationProfile,
     ): FontOperationResult<Long> = if (isSupportedProfile(profile)) {
         FontOperationResult.Success(
-            estimateEmbeddedRenderAssetBytes(resource, key, renderVariant, profile),
+            estimateEmbeddedRenderAssetBytes(resource, parsedFont, key, renderVariant, profile),
         )
     } else {
         failure(

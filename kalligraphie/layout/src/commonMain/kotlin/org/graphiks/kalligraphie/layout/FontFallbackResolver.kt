@@ -641,10 +641,9 @@ internal object FontFallbackResolver {
         ) {
             is FontOperationResult.Success -> acquired.value
             is FontOperationResult.Failure -> {
-                if (
-                    acquired.error.isTerminalMaterializationFailure() ||
-                    acquired.error.code == OperationRenderAssetPool.ESTIMATE_UNAVAILABLE_CODE
-                ) return Validation.Failed(acquired.error, acquired.diagnostics)
+                if (acquired.error.isTerminalMaterializationFailure()) {
+                    return Validation.Failed(acquired.error, acquired.diagnostics)
+                }
                 onRejection(acquired.error.materializationReason(), materialization.requirements.acceptedProfiles.single())
                 return Validation.Rejected(acquired.diagnostics + acquired.error.toDiagnostic())
             }
@@ -766,6 +765,10 @@ internal object FontFallbackResolver {
         is org.graphiks.kalligraphie.api.NativeHandleProfile -> nativeHandle
     }
 
+    private fun FontError.isTerminal(): Boolean = this is FontError.ResourceClosed ||
+        this is FontError.ResourceLimitExceeded || this is FontError.ShapingResourceLimitExceeded ||
+        this is FontError.EditorOperationLimitExceeded || this is FontError.Cancelled
+
     private fun requirementsFor(materialization: EditableLineMaterialization): FontAccessRequirementsSnapshot = when (materialization) {
         EditableLineMaterialization.LayoutOnly -> FontAccessRequirementsSnapshot.layoutOnly()
         is EditableLineMaterialization.Renderable -> materialization.requirements
@@ -812,21 +815,12 @@ internal object FontFallbackResolver {
         message = message,
     )
 
-    private fun FontError.isTerminal(): Boolean = this is FontError.ResourceClosed ||
-        this is FontError.ResourceLimitExceeded || this is FontError.ShapingResourceLimitExceeded ||
-        this is FontError.EditorOperationLimitExceeded || this is FontError.Cancelled
-
     private fun FontError.materializationReason(): FontFallbackReason = when (this) {
         is FontError.UnsupportedRepresentationProfile, is FontError.GlyphRepresentationUnavailable,
         is FontError.ResourceLimitExceeded -> FontFallbackReason.RepresentationUnavailable
         is FontError.IncompatibleCatalogGeneration -> FontFallbackReason.AssetIncompatible
         else -> FontFallbackReason.GlyphMaterializationFailed
     }
-
-    // Called only for acquisition/glyph resolution bounded by one representation profile. A
-    // contour/point/byte bound here rejects that profile; operation and shaping budgets stay terminal.
-    private fun FontError.isTerminalMaterializationFailure(): Boolean =
-        isTerminal() && this !is FontError.ResourceLimitExceeded
 
     private fun ResolutionRequest.decision(
         unit: FallbackUnit,

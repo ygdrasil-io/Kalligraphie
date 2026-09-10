@@ -65,15 +65,7 @@ internal class OperationRenderAssetPool(
                     }
                     estimated.value
                 }
-                is FontOperationResult.Failure -> {
-                    val failure = estimationFailure(
-                        instance,
-                        "Render-asset byte estimate is unavailable: ${estimated.error.message}",
-                    )
-                    return failure.copy(
-                        diagnostics = estimated.diagnostics + estimated.error.toDiagnostic() + failure.diagnostics,
-                    )
-                }
+                is FontOperationResult.Failure -> return estimated
                 is FontOperationResult.Cancelled -> return estimated
             }
         }
@@ -136,8 +128,15 @@ internal class OperationRenderAssetPool(
 
     private fun closeUnexpectedAsset(asset: FontRenderAssetHandle): List<FontDiagnostic> = when (val closed = asset.close()) {
         is FontOperationResult.Success -> closed.diagnostics
-        is FontOperationResult.Failure -> closed.diagnostics + closed.error.toDiagnostic()
-        is FontOperationResult.Cancelled -> closed.diagnostics + FontError.Cancelled("Unexpected render-asset closure was cancelled.").toDiagnostic()
+        is FontOperationResult.Failure -> {
+            if (closeFailure == null) closeFailure = closed.error
+            closed.diagnostics + closed.error.toDiagnostic()
+        }
+        is FontOperationResult.Cancelled -> {
+            val error = FontError.Cancelled("Unexpected render-asset closure was cancelled.")
+            if (closeFailure == null) closeFailure = error
+            closed.diagnostics + error.toDiagnostic()
+        }
     }
 
     private fun estimationFailure(instance: FontInstance, message: String): FontOperationResult.Failure {
@@ -161,3 +160,12 @@ internal class OperationRenderAssetPool(
         const val ESTIMATE_UNAVAILABLE_CODE: String = "font.render-asset-estimate-unavailable"
     }
 }
+
+// A representation-resource rejection remains local to that profile. Failures of the owning
+// operation, its shared shaping budget, lifecycle, or mandatory byte estimate are terminal.
+internal fun FontError.isTerminalMaterializationFailure(): Boolean =
+    this is FontError.ResourceClosed ||
+        this is FontError.ShapingResourceLimitExceeded ||
+        this is FontError.EditorOperationLimitExceeded ||
+        this is FontError.Cancelled ||
+        code == OperationRenderAssetPool.ESTIMATE_UNAVAILABLE_CODE

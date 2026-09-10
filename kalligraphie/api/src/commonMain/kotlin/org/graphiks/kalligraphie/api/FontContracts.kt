@@ -576,9 +576,14 @@ public interface FontInstance {
     public fun estimateRenderAssetBytes(
         renderVariant: FontRenderVariantSnapshot,
         profile: GlyphRepresentationProfile,
-    ): FontOperationResult<Long> = unsupportedContractOperation(
-        "This font instance cannot conservatively estimate render-asset bytes.",
-    )
+    ): FontOperationResult<Long> {
+        val error = FontError.FontDataFailure(
+            code = "font.render-asset-estimate-unavailable",
+            message = "This font instance cannot conservatively estimate render-asset bytes.",
+            location = FontDiagnosticLocation.FaceId(key.face),
+        )
+        return FontOperationResult.Failure(error, listOf(error.toDiagnostic()))
+    }
 
     /**
      * Acquires a render asset for [variant] using [resolver] and [requirements].

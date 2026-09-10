@@ -982,8 +982,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                                         EditableLineError.FontMaterializationFailure(acquiredError)
                                     },
                                     acquired.diagnostics.map(::fontDiagnostic),
-                                    terminal = acquiredError is org.graphiks.kalligraphie.api.FontError.EditorOperationLimitExceeded ||
-                                        acquiredError.code == OperationRenderAssetPool.ESTIMATE_UNAVAILABLE_CODE,
+                                    terminal = acquiredError.isTerminalMaterializationFailure(),
                                 )
                                 if (failure.terminal) return failure
                                 if (firstFailure == null) firstFailure = failure

@@ -529,6 +529,7 @@ internal class PreparedFontResource(
 /** Conservative retained-byte estimate for one embedded operation-owned render asset. */
 internal fun estimateEmbeddedRenderAssetBytes(
     resource: PreparedFontResource,
+    parsedFont: ParsedTrueTypeFont,
     instanceKey: FontInstanceKey,
     renderVariant: FontRenderVariantSnapshot,
     profile: GlyphRepresentationProfile,
@@ -550,6 +551,8 @@ internal fun estimateEmbeddedRenderAssetBytes(
             .saturatingAdd(profile.limits.maxNodes.toLong().saturatingMultiply(96L))
             .saturatingAdd(profile.limits.maxReferences.toLong().saturatingMultiply(8L))
             .saturatingAdd(profile.outlineProfile.maxBytes.toLong())
+            .saturatingAdd(estimateColrCpalRetainedBytes(resource, parsedFont))
+            .saturatingAdd(estimateSvgRetainedBytes(parsedFont, profile))
         is BitmapProfile -> total
             .saturatingAdd(profile.limits.maxIndexTableBytes.toLong())
             .saturatingAdd(profile.limits.maxBitmapTableBytes.toLong())
@@ -558,6 +561,45 @@ internal fun estimateEmbeddedRenderAssetBytes(
     }
     return total
 }
+
+private fun estimateColrCpalRetainedBytes(
+    resource: PreparedFontResource,
+    parsedFont: ParsedTrueTypeFont,
+): Long {
+    val colrRecord = parsedFont.tableRecords["COLR"] ?: return 0L
+    val cpalRecord = parsedFont.tableRecords["CPAL"] ?: return 0L
+    val source = resource.preparedFont.copySourceBytes()
+    val colr = slice(source, colrRecord) ?: return Long.MAX_VALUE
+    val cpal = slice(source, cpalRecord) ?: return Long.MAX_VALUE
+    val baseGlyphCount = colr.unsignedShortAt(2)?.toLong() ?: return Long.MAX_VALUE
+    val layerCount = colr.unsignedShortAt(12)?.toLong() ?: return Long.MAX_VALUE
+    val paletteEntryCount = cpal.unsignedShortAt(2)?.toLong() ?: return Long.MAX_VALUE
+    val paletteCount = cpal.unsignedShortAt(4)?.toLong() ?: return Long.MAX_VALUE
+
+    // Every base-glyph record may retain a complete copy of the layer-reference list. Palette
+    // colors are expanded objects rather than packed four-byte source records.
+    return baseGlyphCount.saturatingMultiply(96L)
+        .saturatingAdd(layerCount.saturatingMultiply(32L))
+        .saturatingAdd(baseGlyphCount.saturatingMultiply(layerCount).saturatingMultiply(8L))
+        .saturatingAdd(paletteCount.saturatingMultiply(48L))
+        .saturatingAdd(paletteCount.saturatingMultiply(paletteEntryCount).saturatingMultiply(56L))
+}
+
+private fun estimateSvgRetainedBytes(
+    parsedFont: ParsedTrueTypeFont,
+    profile: PaintGraphProfile,
+): Long {
+    if ("SVG " !in parsedFont.tableRecords) return 0L
+    val glyphCount = parsedFont.metadata.glyphCount.toLong()
+    return profile.limits.maxSvgDocuments.toLong().saturatingMultiply(96L)
+        .saturatingAdd(glyphCount.saturatingMultiply(112L))
+        .saturatingAdd(glyphCount.saturatingMultiply(profile.limits.maxNodes.toLong()).saturatingMultiply(96L))
+        .saturatingAdd(profile.limits.maxSourceBytes.toLong().saturatingMultiply(96L))
+}
+
+private fun ByteArray.unsignedShortAt(offset: Int): Int? =
+    if (offset < 0 || offset > size - 2) null
+    else ((this[offset].toInt() and 0xFF) shl 8) or (this[offset + 1].toInt() and 0xFF)
 
 internal fun cachedRepresentationRetainedBytes(
     key: GlyphRepresentationKey,
