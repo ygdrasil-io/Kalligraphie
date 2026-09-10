@@ -56,8 +56,132 @@ import org.graphiks.kalligraphie.api.TypographySnapshot
 import org.graphiks.kalligraphie.api.TypographyVersion
 import org.graphiks.kalligraphie.api.createIncrementalLayoutRequest
 import org.graphiks.kalligraphie.shaping.JvmHarfBuzzShapingBackend
+import org.graphiks.kalligraphie.shaping.JvmPreparedFontCachePolicy
+import org.graphiks.kalligraphie.shaping.JvmPreparedFontCacheUsage
 
 class JvmIncrementalParagraphLayoutSessionTest {
+    @Test
+    fun reusesPreparedFontsAcrossRealMultifontEditsWithinTheDeclaredBudget() {
+        val source = fixture("fi سلام")
+        val target = source.withText("fi سلام fi")
+        val policy = JvmPreparedFontCachePolicy(2, 4_000_000, 20_000_000, 24_000_000)
+        val session = assertIs<FontOperationResult.Success<JvmIncrementalParagraphLayoutSession>>(
+            JvmIncrementalParagraphLayoutSession.open(4_000_000, policy),
+        ).value
+        val resolver = assertIs<FontOperationResult.Success<org.graphiks.kalligraphie.api.FontAssetResolverHandle>>(
+            source.catalog.openAssetResolver(),
+        ).value
+        assertEquals(JvmPreparedFontCacheUsage(0, 0, 0, 0, 0, 0), session.preparedFontCacheUsage)
+        val materialization = EditableLineMaterialization.Renderable(
+            resolver, org.graphiks.kalligraphie.api.FontRenderVariantKey.default,
+            org.graphiks.kalligraphie.api.OutlineProfile(maxBytes = 1_000_000, maxContours = 2_048, maxPoints = 16_384, maxCompositeDepth = 8, maxCompositeComponents = 256),
+        )
+        try {
+            for (revision in listOf(source, target)) {
+                val result = assertIs<IncrementalLayoutResult.Success>(
+                    session.layout(request(revision, materialization = materialization)),
+                )
+                assertEquals(revision.snapshot.range, result.layout.coveredRange)
+                assertEquals(listOf(3, 1), result.layout.lines.first().glyphIds())
+                assertEquals(listOf(900f, 292f), result.layout.lines.first().glyphAdvances())
+                val runs = result.layout.lines.flatMap(LineLayout::positionedGlyphRuns)
+                assertEquals(source.faces.toSet(), runs.map { it.fontInstanceKey.face }.toSet())
+                assertTrue(runs.flatMap { it.glyphs }.all { it.materializationCertificate != null })
+                assertEquals(0, session.preparedFontCacheUsage.activeLeases)
+                assertEquals(2, session.preparedFontCacheUsage.idleEntries)
+                assertPreparedUsageWithin(policy, session.preparedFontCacheUsage)
+            }
+            val wrongResolver = assertIs<FontOperationResult.Success<org.graphiks.kalligraphie.api.FontAssetResolverHandle>>(
+                incrementalRealFontFixture("fi", fonts = listOf(
+                    IncrementalFontFixture("gdef-kern/GdefKerningFixture.ttf", "GDEF kerning fixture"),
+                )).catalog.openAssetResolver(),
+            ).value
+            try {
+                assertIs<IncrementalLayoutResult.Failure>(session.layout(request(target,
+                    materialization = EditableLineMaterialization.Renderable(
+                        wrongResolver, org.graphiks.kalligraphie.api.FontRenderVariantKey.default,
+                        org.graphiks.kalligraphie.api.OutlineProfile(maxBytes = 1_000_000, maxContours = 2_048, maxPoints = 16_384, maxCompositeDepth = 8, maxCompositeComponents = 256),
+                    ),
+                )))
+            } finally { wrongResolver.close() }
+        } finally {
+            resolver.close()
+            session.close()
+        }
+        session.close()
+        assertEquals(JvmPreparedFontCacheUsage(0, 0, 0, 0, 0, 0), session.preparedFontCacheUsage)
+        assertTrue(checkNotNull(session.currentLayout()).layout.lines.isNotEmpty())
+        assertFailsWith<IllegalStateException> { session.layout(request(target)) }
+    }
+
+    @Test
+    fun rejectsASecondPreparedFontBeforeItsNativeAllocationExceedsTheBudget() {
+        val source = fixture("fi")
+        val policy = JvmPreparedFontCachePolicy(2, 4_000_000, 500_000, 4_500_000)
+        val session = assertIs<FontOperationResult.Success<JvmIncrementalParagraphLayoutSession>>(
+            JvmIncrementalParagraphLayoutSession.open(preparedFontCachePolicy = policy),
+        ).value
+        try {
+            val initial = assertIs<IncrementalLayoutResult.Success>(session.layout(request(source)))
+            val failure = assertIs<IncrementalLayoutResult.Failure>(session.layout(request(source.withText("fi سلام"))))
+            val paragraph = assertIs<IncrementalLayoutError.ParagraphFailure>(failure.error)
+            assertIs<org.graphiks.kalligraphie.api.FontError.ResourceLimitExceeded>(
+                assertIs<ParagraphLayoutError.FontFailure>(paragraph.paragraphError).fontError,
+            )
+            assertEquals(initial.layout.lines, session.currentLayout()?.layout?.lines)
+            assertEquals(0, session.preparedFontCacheUsage.activeLeases)
+            assertPreparedUsageWithin(policy, session.preparedFontCacheUsage)
+        } finally { session.close() }
+        session.close()
+        assertEquals(JvmPreparedFontCacheUsage(0, 0, 0, 0, 0, 0), session.preparedFontCacheUsage)
+    }
+
+    @Test
+    fun boundedSessionRetainsCompleteMultifontGeometryWhileReplacingIdleFonts() {
+        val source = fixture("fi سلام")
+        val policies = listOf(
+            JvmPreparedFontCachePolicy.default.copy(maxEntries = 1),
+            JvmPreparedFontCachePolicy.default.copy(maxSourceBytes = 432_000),
+            JvmPreparedFontCachePolicy.default.copy(maxEstimatedNativeBytes = 2_100_000),
+            JvmPreparedFontCachePolicy.default.copy(maxTotalBytes = 2_600_000),
+        )
+        val resolver = assertIs<FontOperationResult.Success<org.graphiks.kalligraphie.api.FontAssetResolverHandle>>(
+            source.catalog.openAssetResolver(),
+        ).value
+        val materialization = EditableLineMaterialization.Renderable(
+            resolver, org.graphiks.kalligraphie.api.FontRenderVariantKey.default,
+            org.graphiks.kalligraphie.api.OutlineProfile(maxBytes = 1_000_000, maxContours = 2_048, maxPoints = 16_384, maxCompositeDepth = 8, maxCompositeComponents = 256),
+        )
+        try {
+            for (policy in policies) {
+                val session = assertIs<FontOperationResult.Success<JvmIncrementalParagraphLayoutSession>>(
+                    JvmIncrementalParagraphLayoutSession.open(preparedFontCachePolicy = policy),
+                ).value
+                session.use {
+                    for (revision in listOf(source, source.withText("fi سلام"))) {
+                        val result = assertIs<IncrementalLayoutResult.Success>(session.layout(request(revision, materialization = materialization)))
+                        assertEquals(revision.snapshot.range, result.layout.coveredRange)
+                        assertEquals(listOf(listOf(3, 1), listOf(85, 3080, 3075, 1919)), result.layout.lines.map { it.glyphIds() })
+                        assertEquals(listOf(listOf(900f, 292f), listOf(452f, 446f, 245f, 568f)), result.layout.lines.map { it.glyphAdvances() })
+                        assertTrue(result.layout.lines.flatMap(LineLayout::positionedGlyphRuns).flatMap { it.glyphs }.all { it.materializationCertificate != null })
+                        assertEquals(0, session.preparedFontCacheUsage.activeLeases)
+                        assertPreparedUsageWithin(policy, session.preparedFontCacheUsage)
+                    }
+                }
+                assertEquals(JvmPreparedFontCacheUsage(0, 0, 0, 0, 0, 0), session.preparedFontCacheUsage)
+            }
+        } finally { resolver.close() }
+    }
+
+    private fun assertPreparedUsageWithin(policy: JvmPreparedFontCachePolicy, usage: JvmPreparedFontCacheUsage) {
+        assertTrue(usage.idleEntries <= policy.maxEntries)
+        assertTrue(usage.idleSourceBytes >= 0 && usage.activeSourceBytes >= 0)
+        assertTrue(usage.idleEstimatedNativeBytes >= 0 && usage.activeEstimatedNativeBytes >= 0)
+        assertTrue(usage.idleSourceBytes + usage.activeSourceBytes <= policy.maxSourceBytes)
+        assertTrue(usage.idleEstimatedNativeBytes + usage.activeEstimatedNativeBytes <= policy.maxEstimatedNativeBytes)
+        assertTrue(usage.idleSourceBytes + usage.activeSourceBytes + usage.idleEstimatedNativeBytes + usage.activeEstimatedNativeBytes <= policy.maxTotalBytes)
+    }
+
     @Test
     fun operationFailurePreservesPreviousPublicationAndRetryMatchesFreshSession() {
         val fixture = fixture("fi \u0633\u0644\u0627\u0645")
@@ -734,11 +858,12 @@ class JvmIncrementalParagraphLayoutSessionTest {
         constraints: HorizontalParagraphConstraints = constraints(),
         operationProfile: EditorOperationProfile = EditorOperationProfile.unbounded,
         inlineObjects: InlineObjectSnapshot? = null,
+        materialization: EditableLineMaterialization = EditableLineMaterialization.LayoutOnly,
     ): JvmIncrementalParagraphLayoutRequest = JvmIncrementalParagraphLayoutRequest(
         request = incrementalRequest(fixture, cancellationToken, requestedRange, previousState, delta, constraints, operationProfile),
         baseDirection = baseDirection,
         language = language,
-        materialization = EditableLineMaterialization.LayoutOnly,
+        materialization = materialization,
         inlineObjects = inlineObjects,
     )
 

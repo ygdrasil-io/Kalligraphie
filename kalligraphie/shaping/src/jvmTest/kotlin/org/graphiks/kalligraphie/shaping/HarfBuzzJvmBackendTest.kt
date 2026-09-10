@@ -30,7 +30,6 @@ import org.graphiks.kalligraphie.unicode.TextSnapshots
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -183,101 +182,47 @@ class HarfBuzzJvmBackendTest {
     }
 
     @Test
-    fun preparedFontCacheEvictsTheLeastRecentlyUsedIdleResourceWithinItsBound() {
-        val released = mutableListOf<String>()
-        val cache = BoundedPreparedResourceCache<String, CachedResource>(
-            maximumEntries = 1,
-            maximumWeightBytes = 1,
-            weightInBytes = { resource -> resource.weight },
-            release = { resource -> released += resource.name },
+    fun eachPreparedFontBudgetRejectsARealLigatureWithoutPublishingPartialGlyphs() {
+        val policies = listOf(
+            JvmPreparedFontCachePolicy.default.copy(maxEntries = 0),
+            JvmPreparedFontCachePolicy.default.copy(maxSourceBytes = 1),
+            JvmPreparedFontCachePolicy.default.copy(maxEstimatedNativeBytes = 1),
+            JvmPreparedFontCachePolicy.default.copy(maxTotalBytes = 1),
         )
-
-        cache.acquire("first") { CachedResource("first", weight = 1) }.close()
-        cache.acquire("second") { CachedResource("second", weight = 1) }.close()
-
-        assertEquals(listOf("first"), released)
-        assertEquals(emptyList(), cache.close())
-        assertEquals(listOf("first", "second"), released)
-    }
-
-    @Test
-    fun preparedFontCacheDefersReleaseUntilTheLastActiveLeaseEnds() {
-        val released = mutableListOf<String>()
-        val cache = BoundedPreparedResourceCache<String, CachedResource>(
-            maximumEntries = 1,
-            maximumWeightBytes = 1,
-            weightInBytes = { resource -> resource.weight },
-            release = { resource -> released += resource.name },
-        )
-
-        val first = cache.acquire("first") { CachedResource("first", weight = 1) }
-        cache.acquire("second") { CachedResource("second", weight = 1) }.close()
-
-        assertEquals(listOf("second"), released)
-        assertEquals(emptyList(), cache.close())
-        assertEquals(listOf("second"), released)
-
-        first.close()
-        assertEquals(listOf("second", "first"), released)
-    }
-
-    @Test
-    fun preparedFontCacheDefersAnActiveLeaseReleaseAcrossConcurrentClose() {
-        val released = mutableListOf<String>()
-        val cache = BoundedPreparedResourceCache<String, CachedResource>(
-            maximumEntries = 1,
-            maximumWeightBytes = 1,
-            weightInBytes = { resource -> resource.weight },
-            release = { resource -> synchronized(released) { released += resource.name } },
-        )
-        val acquired = CountDownLatch(1)
-        val releaseLease = CountDownLatch(1)
-        val threadFailure = AtomicReference<Throwable?>(null)
-        val holder = Thread {
+        val prepared = text("fi")
+        val font = fontInstance("/fonts/dejavu/DejaVuSans.ttf", "DejaVu Sans")
+        for (policy in policies) {
+            val backend = JvmHarfBuzzShapingBackend.open(policy).successValue()
             try {
-                cache.acquire("first") { CachedResource("first", weight = 1) }.use {
-                    acquired.countDown()
-                    check(releaseLease.await(5, TimeUnit.SECONDS)) { "The test did not release the cache lease." }
-                }
-            } catch (error: Throwable) {
-                threadFailure.set(error)
+                val failure = assertIs<FontOperationResult.Failure>(backend.shape(
+                    request(prepared, font, ShapingDirection.LEFT_TO_RIGHT, OpenTypeScript("Latn"), "en", 0),
+                ))
+                assertIs<FontError.ResourceLimitExceeded>(failure.error)
+            } finally {
+                assertIs<FontOperationResult.Success<*>>(backend.close())
+                assertIs<FontOperationResult.Success<*>>(backend.close())
             }
         }
-
-        holder.start()
-        assertTrue(acquired.await(5, TimeUnit.SECONDS))
-        cache.acquire("second") { CachedResource("second", weight = 1) }.close()
-        assertEquals(emptyList(), cache.close())
-        assertEquals(listOf("second"), synchronized(released) { released.toList() })
-
-        releaseLease.countDown()
-        holder.join(5_000)
-        assertTrue(!holder.isAlive)
-        assertEquals(null, threadFailure.get())
-        assertEquals(listOf("second", "first"), synchronized(released) { released.toList() })
     }
 
     @Test
-    fun preparedFontCacheDoesNotStrandAnActiveLeaseWhenEvictionReleaseFails() {
-        val released = mutableListOf<String>()
-        val cache = BoundedPreparedResourceCache<String, CachedResource>(
-            maximumEntries = 1,
-            maximumWeightBytes = 1,
-            weightInBytes = { resource -> resource.weight },
-            release = { resource ->
-                released += resource.name
-                if (resource.name == "first") error("The first resource cannot be released.")
-            },
-        )
-
-        cache.acquire("first") { CachedResource("first", weight = 1) }.close()
-
-        assertFailsWith<IllegalStateException> {
-            cache.acquire("second") { CachedResource("second", weight = 1) }
+    fun aOneFontBudgetStillShapesAlternatingRealSizesWithCompleteGeometry() {
+        val backend = JvmHarfBuzzShapingBackend.open(
+            JvmPreparedFontCachePolicy.default.copy(maxEntries = 1),
+        ).successValue()
+        val large = fontInstance("/fonts/dejavu/DejaVuSans.ttf", "DejaVu Sans")
+        val small = fontInstance("/fonts/dejavu/DejaVuSans.ttf", "DejaVu Sans", LayoutUnit(1024f))
+        try {
+            for ((font, advance) in listOf(large to 1290f, small to 645f, large to 1290f)) {
+                val shaped = shape(backend, "fi", font, ShapingDirection.LEFT_TO_RIGHT, OpenTypeScript("Latn"), "en", 0)
+                assertEquals(listOf(GlyphId(5042)), shaped.glyphs.map { it.glyphId })
+                assertEquals(listOf(advance), shaped.glyphs.map { it.xAdvance.value })
+                assertEquals(1, shaped.clusters.size)
+                assertEquals(2, shaped.clusters.single().scalarRanges.size)
+            }
+        } finally {
+            backend.close()
         }
-
-        assertEquals(emptyList(), cache.close())
-        assertEquals(listOf("first", "second"), released)
     }
 
     @Test
@@ -964,11 +909,6 @@ class HarfBuzzJvmBackendTest {
             TextRange(snapshot.textIndexAtScalarBoundary(scalar), snapshot.textIndexAtScalarBoundary(scalar + 1))
         }
     }
-
-    private data class CachedResource(
-        val name: String,
-        val weight: Long,
-    )
 
     private data class ConcurrentShapingObservation(
         val glyphIds: List<Int>,

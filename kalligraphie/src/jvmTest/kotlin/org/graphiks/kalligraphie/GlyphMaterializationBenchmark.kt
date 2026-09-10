@@ -46,6 +46,7 @@ import org.graphiks.kalligraphie.api.PaintGraphProfile
 import org.graphiks.kalligraphie.api.ParagraphLayoutResult
 import org.graphiks.kalligraphie.api.TextSlice
 import org.graphiks.kalligraphie.api.TextVersion
+import org.graphiks.kalligraphie.shaping.JvmPreparedFontCachePolicy
 
 class GlyphMaterializationBenchmarkTest {
     @Test
@@ -147,6 +148,9 @@ internal data class GlyphMaterializationMeasurementProfile(
     val estimatedAssetBytes: GlyphMaterializationMeasurementValue,
     val assetOpenings: GlyphMaterializationMeasurementValue,
     val operationReuses: GlyphMaterializationMeasurementValue,
+    val preparedSourceBytes: GlyphMaterializationMeasurementValue,
+    val estimatedPreparedNativeBytes: GlyphMaterializationMeasurementValue,
+    val backendReuses: GlyphMaterializationMeasurementValue,
 )
 
 internal data class GlyphMaterializationMeasurementReport(
@@ -191,6 +195,9 @@ internal data class GlyphMaterializationMeasurementReport(
             appendMeasurement("Estimated asset bytes", profile.estimatedAssetBytes)
             appendMeasurement("Asset openings", profile.assetOpenings)
             appendMeasurement("Operation reuses", profile.operationReuses)
+            appendMeasurement("Prepared font source bytes copied", profile.preparedSourceBytes)
+            appendMeasurement("Estimated prepared native bytes", profile.estimatedPreparedNativeBytes)
+            appendMeasurement("Backend reuses", profile.backendReuses)
         }
     }
 
@@ -215,6 +222,10 @@ internal object GlyphMaterializationBenchmark {
         "RenderableConsumerWarmSingleFont",
         "RenderableConsumerColdMixedBidi",
         "RenderableConsumerWarmMixedBidi",
+        "SessionColdSingleFont",
+        "SessionWarmSingleFont",
+        "SessionColdMixedBidi",
+        "SessionWarmMixedBidi",
         "TrueTypeColdPreparation",
         "TrueTypeWarmPreparation",
         "TrueTypeColdTextMapping",
@@ -301,6 +312,10 @@ internal object GlyphMaterializationBenchmark {
             consumerWarmProfile(consumerSingle, warmupIterations, iterations),
             consumerColdProfile(consumerMixedBidi, warmupIterations, iterations),
             consumerWarmProfile(consumerMixedBidi, warmupIterations, iterations),
+            sessionProfile(consumerSingle, false, warmupIterations, iterations),
+            sessionProfile(consumerSingle, true, warmupIterations, iterations),
+            sessionProfile(consumerMixedBidi, false, warmupIterations, iterations),
+            sessionProfile(consumerMixedBidi, true, warmupIterations, iterations),
             trueTypeColdPreparationProfile(liberation, warmupIterations, iterations),
             trueTypeWarmPreparationProfile(liberation, warmupIterations, iterations),
             trueTypeColdTextMappingProfile(liberation, trueTypeScalars, warmupIterations, iterations),
@@ -529,6 +544,105 @@ internal object GlyphMaterializationBenchmark {
         } finally {
             opened.close()
         }
+    }
+
+    private fun sessionProfile(
+        scenario: ConsumerScenario,
+        warm: Boolean,
+        warmupIterations: Int,
+        iterations: Int,
+    ): GlyphMaterializationMeasurementProfile = measuredProfile(
+        name = "Session${if (warm) "Warm" else "Cold"}${scenario.profileSuffix}",
+        route = "reusable JVM RENDERABLE incremental session (${scenario.routeDescription})",
+        timedBoundary = if (warm) {
+            "new text revision, session layout and certified-result consumption; catalog, resolver, session setup and closure excluded"
+        } else {
+            "session opening, new text revision, layout and certified-result consumption; catalog, resolver setup and all closure excluded"
+        },
+        cacheState = if (warm) {
+            "one session/backend with a seeded prepared-font cache; every sample supplies a fresh text version"
+        } else {
+            "a fresh session/backend per sample; shared catalog and resolver seeded outside timing"
+        },
+        warmupIterations = warmupIterations,
+        iterations = iterations,
+    ) { record ->
+        val opened = openConsumerScenario(scenario)
+        try {
+            // Both profiles start with identical warmed portable render-asset state.
+            observeConsumerLayout(layoutConsumerScenario(opened), opened, 0)
+            val reusedSession = if (warm) success(JvmIncrementalParagraphLayoutSession.open()) else null
+            try {
+                if (reusedSession != null) observeSessionLayout(reusedSession, opened, backendReused = false)
+                repeat(warmupIterations + iterations) { index ->
+                    var coldSession: JvmIncrementalParagraphLayoutSession? = null
+                    val sample = timed(cleanup = { coldSession?.close() }) {
+                        val session = reusedSession ?: success(JvmIncrementalParagraphLayoutSession.open()).also { coldSession = it }
+                        observeSessionLayout(session, opened, backendReused = warm)
+                    }
+                    if (index >= warmupIterations) record(sample)
+                }
+            } finally {
+                reusedSession?.close()
+            }
+        } finally {
+            opened.close()
+        }
+    }
+
+    private fun observeSessionLayout(
+        session: JvmIncrementalParagraphLayoutSession,
+        opened: OpenConsumerScenario,
+        backendReused: Boolean,
+    ): Observation {
+        val snapshot = Kalligraphie.decodeUtf8(
+            TextVersion.create(), listOf(TextSlice.Utf8(opened.scenario.text.encodeToByteArray())),
+        ).snapshot
+        val request = org.graphiks.kalligraphie.api.createIncrementalLayoutRequest(
+            input = org.graphiks.kalligraphie.api.LayoutInput(
+                snapshot,
+                org.graphiks.kalligraphie.api.TypographySnapshot(
+                    version = org.graphiks.kalligraphie.api.TypographyVersion.create(),
+                    fontCatalog = opened.catalog,
+                    resolutionPolicy = opened.policy,
+                    fontInstanceDescriptor = FontInstanceDescriptor(LayoutUnit(1_000f)),
+                ),
+            ),
+            requestedRange = snapshot.range,
+            constraints = HorizontalParagraphConstraints(
+                region = LayoutRect(LayoutUnit(0f), LayoutUnit(0f), LayoutUnit(8_000f), LayoutUnit(1_000f)),
+                lineMetrics = org.graphiks.kalligraphie.api.LineVerticalMetrics(LayoutUnit(800f), LayoutUnit(200f)),
+            ),
+            overscan = org.graphiks.kalligraphie.api.LineOverscan(0),
+            previousState = null,
+            delta = null,
+            cancellationToken = CancellationToken.none,
+        )
+        val valid = when (request) {
+            is org.graphiks.kalligraphie.api.LayoutContractResult.Success -> request.value
+            is org.graphiks.kalligraphie.api.LayoutContractResult.Failure -> error("Invalid session measurement request: ${request.error}")
+        }
+        val result = session.layout(JvmIncrementalParagraphLayoutRequest(
+            request = valid,
+            baseDirection = BaseDirection.LEFT_TO_RIGHT,
+            language = opened.scenario.language,
+            materialization = EditableLineMaterialization.Renderable(
+                resolver = opened.resolver,
+                renderVariant = FontRenderVariantSnapshot.default,
+                requirements = opened.scenario.requirements,
+            ),
+        ))
+        val layout = when (result) {
+            is org.graphiks.kalligraphie.api.IncrementalLayoutResult.Success -> result.layout
+            else -> error("Session measurement failed: $result")
+        }
+        val usage = session.preparedFontCacheUsage
+        check(usage.activeLeases == 0 && usage.idleEntries == opened.scenario.expectedFaceCount)
+        return observeConsumerLines(layout.lines, opened, 0).copy(
+            preparedSourceBytes = if (backendReused) 0 else usage.idleSourceBytes,
+            estimatedPreparedNativeBytes = usage.idleEstimatedNativeBytes,
+            backendReuses = if (backendReused) 1 else 0,
+        )
     }
 
     private fun trueTypeColdPreparationProfile(
@@ -933,18 +1047,26 @@ internal object GlyphMaterializationBenchmark {
         opened: OpenConsumerScenario,
         sourceBytes: Long,
     ): Observation {
-        val scenario = opened.scenario
         val layout = when (result) {
             is ParagraphLayoutResult.Success -> result.layout
             is ParagraphLayoutResult.Failure -> error("Consumer measurement failed: ${result.error}")
             is ParagraphLayoutResult.Cancelled -> error("Consumer measurement was unexpectedly cancelled.")
         }
-        val glyphs = layout.lines.flatMap { line -> line.positionedGlyphRuns.flatMap { run -> run.glyphs } }
+        return observeConsumerLines(layout.lines, opened, sourceBytes)
+    }
+
+    private fun observeConsumerLines(
+        lines: List<org.graphiks.kalligraphie.api.LineLayout>,
+        opened: OpenConsumerScenario,
+        sourceBytes: Long,
+    ): Observation {
+        val scenario = opened.scenario
+        val glyphs = lines.flatMap { line -> line.positionedGlyphRuns.flatMap { run -> run.glyphs } }
         check(glyphs.isNotEmpty()) { "Consumer measurement must publish final glyphs." }
         check(glyphs.all { glyph -> glyph.materializationCertificate != null }) {
             "Consumer measurement must publish only certified glyphs."
         }
-        val faceCount = layout.lines
+        val faceCount = lines
             .flatMap { line -> line.positionedGlyphRuns }
             .map { run -> run.fontInstanceKey.face }
             .distinct()
@@ -975,7 +1097,7 @@ internal object GlyphMaterializationBenchmark {
             )
             if (total > Long.MAX_VALUE - estimate) Long.MAX_VALUE else total + estimate
         }
-        consumeConsumerLayout(layout)
+        blackhole = blackhole xor glyphs.size.toLong()
         return Observation(
             representation = GlyphRepresentation.Empty,
             sourceBytes = sourceBytes,
@@ -984,13 +1106,6 @@ internal object GlyphMaterializationBenchmark {
             assetOpenings = assetKeys.size.toLong(),
             operationReuses = glyphs.size.toLong(),
         )
-    }
-
-    private fun consumeConsumerLayout(layout: org.graphiks.kalligraphie.api.ParagraphLayout) {
-        val certificates = layout.lines.sumOf { line ->
-            line.positionedGlyphRuns.sumOf { run -> run.glyphs.count { glyph -> glyph.materializationCertificate != null } }
-        }
-        blackhole = blackhole xor certificates.toLong()
     }
 
     private fun openAsset(
@@ -1061,6 +1176,9 @@ internal object GlyphMaterializationBenchmark {
             estimatedAssetBytes = operationMeasurement(samples, Observation::estimatedAssetBytes, "conservative bytes estimated for operation-owned render assets per measured iteration"),
             assetOpenings = operationMeasurement(samples, Observation::assetOpenings, "distinct operation-owned render assets opened per measured iteration"),
             operationReuses = operationMeasurement(samples, Observation::operationReuses, "final-glyph proofs reused from earlier materialization in the same operation per measured iteration"),
+            preparedSourceBytes = operationMeasurement(samples, Observation::preparedSourceBytes, "OpenType bytes copied into the session's native source buffers during this sample; retained seeded fonts need no new copy"),
+            estimatedPreparedNativeBytes = operationMeasurement(samples, Observation::estimatedPreparedNativeBytes, "retained estimate at sample end using ${JvmPreparedFontCachePolicy.nativeEstimatorVersion}; excludes source buffers and is not measured native allocation"),
+            backendReuses = operationMeasurement(samples, Observation::backendReuses, "existing session/backend used per sample (0 cold, 1 warm); lifecycle defined by the runner"),
         )
     }
 
@@ -1073,7 +1191,7 @@ internal object GlyphMaterializationBenchmark {
         return if (values.size == samples.size) {
             measurement(values.averageAsLong(), detail)
         } else {
-            unavailable("profile does not use operation-scoped paragraph materialization")
+            unavailable("profile does not observe this operation or session accounting dimension")
         }
     }
 
@@ -1264,6 +1382,9 @@ internal object GlyphMaterializationBenchmark {
         val estimatedAssetBytes: Long? = null,
         val assetOpenings: Long? = null,
         val operationReuses: Long? = null,
+        val preparedSourceBytes: Long? = null,
+        val estimatedPreparedNativeBytes: Long? = null,
+        val backendReuses: Long? = null,
     ) {
         companion object {
             fun empty(cancellationSignaledAtNanos: Long): Observation = Observation(cancellationSignaledAtNanos = cancellationSignaledAtNanos)

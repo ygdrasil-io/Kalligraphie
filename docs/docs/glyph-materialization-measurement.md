@@ -7,7 +7,7 @@ CPAL, SVG-in-OpenType, EBDT format 1, and Liberation Sans TrueType fixtures
 through the public catalog, resolver, instance, asset, and `resolveGlyph(...)`
 paths.
 
-The runner records twenty-three profiles, in this order:
+The runner records twenty-seven profiles, in this order:
 
 - cold and warm COLR v0 / CPAL v0 normalization;
 - cold and warm SVG-in-OpenType normalization;
@@ -19,6 +19,8 @@ The runner records twenty-three profiles, in this order:
   Latin glyph;
 - cold and warm public `RENDERABLE` consumer journeys with Bungee Color Latin
   plus Liberation Sans Hebrew fallback in one BiDi paragraph.
+- cold and warm reusable incremental sessions for the same single-font and
+  mixed-BiDi paragraphs;
 - cold and warm portable TrueType preparation, text mapping, metrics, outlines,
   and detachment stages over one stable Liberation Sans editor paragraph.
 
@@ -49,6 +51,42 @@ openings, and final-glyph proofs reused from earlier materialization in the same
 operation. These are scenario measurements reconstructed from immutable
 certificates and provider estimates. They are neither a time constraint nor
 proof of a particular cache or pooling algorithm.
+
+## Reusable HarfBuzz sessions
+
+`SessionColdSingleFont`, `SessionWarmSingleFont`, `SessionColdMixedBidi` and
+`SessionWarmMixedBidi` use `JvmIncrementalParagraphLayoutSession`. Both sides
+seed the portable catalog/resolver asset state outside timing. Cold samples open
+a new session inside the timed boundary; warm samples retain one session and
+its HarfBuzz backend, seeded by an untimed layout. Every sample supplies a fresh
+text version, lays out the whole paragraph, and consumes certified glyphs.
+Session and resolver closure are outside these intervals.
+
+The session fields report source bytes copied into retained native source
+buffers during the sample, the estimated retained HarfBuzz bytes at sample end,
+and reuse of an existing backend (0 cold, 1 warm, determined by runner lifecycle).
+Cold source-copy counts come from the session's idle-byte accounting: these
+small fixtures fit the default policy without eviction. Warm samples need no
+new source copy. This is separate from the existing catalog-input source field.
+
+`JvmPreparedFontCachePolicy` limits entries, source bytes, estimated native
+bytes, and their sum across both active and idle fonts. Admission is reserved
+under one lock before native allocation; only idle fonts can be evicted, and
+an impossible admission returns `FontError.ResourceLimitExceeded` without a
+partial layout. The session policy is independent of the render-asset pool and
+the incremental layout cache. `preparedFontCacheUsage` is an immutable snapshot
+readable before layout and after close. Closing the backend releases idle fonts
+immediately and active fonts after their final lease; it cannot reopen.
+
+Estimator `harfbuzz-14.3.0-4x-source-plus-256k-v1` accounts 256 KiB plus four
+times the source length for HarfBuzz objects, accelerators and retained caches;
+the source buffer itself is counted separately. This deliberately conservative,
+versioned estimate is a policy charge, not an instrumented allocation counter
+or a proven upper bound for arbitrary fonts. Transient shaping buffers, JVM
+copies, allocator metadata, shared library memory and process RSS are outside
+this accounting. Actual native bytes and allocation counts remain `unavailable`.
+Latency, thread allocations and heap deltas are observed measurements; native
+estimates must never be interpreted as measured total process memory.
 
 ## Portable TrueType stages
 
@@ -112,8 +150,8 @@ GC requests. It also records the input source bytes supplied to an embedded
 catalog in the timed interval, decoded bitmap bytes and pixels, and normalized
 paint-node counts.
 
-The four operation-asset fields are available only for the public paragraph
-consumer profiles. Direct-glyph and portable TrueType stage profiles report
+The four operation-asset fields are available for public paragraph consumer
+and session profiles. Direct-glyph and portable TrueType stage profiles report
 them as `unavailable` because those routes do not execute an operation-scoped
 paragraph composition.
 
@@ -126,6 +164,6 @@ native-allocation accounting boundary, so those fields explicitly report
 field is a runner-scoped heap observation, not cache accounting or a universal
 process-memory measurement; it can be negative after GC.
 
-The runner has no latency threshold. Functional `check` runs do not execute a
-measurement unless the opt-in environment variable is set, and the runner does
+The runner has no latency threshold. Functional `check` runs exclude the
+measurement task even when the opt-in variable is set, and the runner does
 not add a renderer, rasterizer, GPU API, or native bridge.

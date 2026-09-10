@@ -2,6 +2,8 @@
 
 package org.graphiks.kalligraphie
 
+import org.graphiks.kalligraphie.shaping.JvmPreparedFontCachePolicy
+import org.graphiks.kalligraphie.shaping.JvmPreparedFontCacheUsage
 import org.graphiks.kalligraphie.api.BaseDirection
 import org.graphiks.kalligraphie.api.EditableLineMaterialization
 import org.graphiks.kalligraphie.api.EditorOperationContext
@@ -110,6 +112,15 @@ public class JvmIncrementalParagraphLayoutSession private constructor(
     private val backend: ShapingBackend,
     private val engine: IncrementalParagraphLayoutEngine,
 ) : AutoCloseable {
+    private val inspectPreparedFontCache = JvmHarfBuzzShapingBackend.preparedFontCacheUsageInspector(backend)
+
+    /**
+     * Immutable prepared-font accounting, independent of layout and render-asset budgets.
+     * Readable before the first layout and after [close]; closing a session returns zero usage.
+     */
+    public val preparedFontCacheUsage: JvmPreparedFontCacheUsage
+        get() = inspectPreparedFontCache()
+
     private var nextGeneration: Long = 0L
     private var latestAttempt: Long = 0L
     private var publication: IncrementalLayoutResult.Success? = null
@@ -628,12 +639,19 @@ public class JvmIncrementalParagraphLayoutSession private constructor(
          * The cache budget is validated before opening native resources. Native-backend failure
          * or cancellation is returned without creating a session. A successful session must be
          * closed by its owner.
+         * [preparedFontCachePolicy] independently bounds active and idle HarfBuzz fonts, including
+         * native source copies and a versioned native estimate; it does not change the layout
+         * cache budget or the operation-scoped render-asset pool.
          *
          * @throws IllegalArgumentException when [cacheBudgetBytes] is negative.
          */
-        public fun open(cacheBudgetBytes: Long = DEFAULT_CACHE_BUDGET_BYTES):
+        @JvmOverloads
+        public fun open(
+            cacheBudgetBytes: Long = DEFAULT_CACHE_BUDGET_BYTES,
+            preparedFontCachePolicy: JvmPreparedFontCachePolicy = JvmPreparedFontCachePolicy.default,
+        ):
             FontOperationResult<JvmIncrementalParagraphLayoutSession> =
-            openWithBackendFactory(cacheBudgetBytes) { JvmHarfBuzzShapingBackend.open() }
+            openWithBackendFactory(cacheBudgetBytes) { JvmHarfBuzzShapingBackend.open(preparedFontCachePolicy) }
 
         internal fun openWithBackendFactory(
             cacheBudgetBytes: Long,

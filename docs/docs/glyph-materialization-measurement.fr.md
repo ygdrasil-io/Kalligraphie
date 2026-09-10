@@ -8,7 +8,7 @@ fixes) COLR/CPAL, SVG-in-OpenType, EBDT format 1 et Liberation Sans TrueType
 auditées et versionnées, à travers les parcours publics catalogue, resolver
 (résolveur), instance, asset (ressource de rendu) et `resolveGlyph(...)`.
 
-Le runner enregistre vingt-trois profils, dans cet ordre :
+Le runner enregistre vingt-sept profils, dans cet ordre :
 
 - normalisation COLR v0 / CPAL v0 froide et chaude ;
 - normalisation SVG-in-OpenType froide et chaude ;
@@ -22,6 +22,8 @@ Le runner enregistre vingt-trois profils, dans cet ordre :
 - parcours consommateur public `RENDERABLE` froid et chaud avec un paragraphe
   BiDi (bidirectionnel) mêlant Bungee Color latin et le fallback (police de
   repli) hébreu Liberation Sans.
+- sessions incrémentales réutilisables froides et chaudes pour les mêmes
+  paragraphes mono-police et BiDi multi-police ;
 - étapes portables TrueType froides et chaudes de préparation, correspondance
   texte-glyphe, métriques, contours et détachement sur un paragraphe d’éditeur
   Liberation Sans stable.
@@ -57,6 +59,46 @@ mesures de scénario reconstruites depuis les certificats immuables et les
 estimations du provider (fournisseur). Elles ne constituent ni une contrainte
 de temps, ni la preuve d’un algorithme particulier de cache ou de pool (réserve
 réutilisable).
+
+## Sessions HarfBuzz réutilisables
+
+`SessionColdSingleFont`, `SessionWarmSingleFont`, `SessionColdMixedBidi` et
+`SessionWarmMixedBidi` utilisent `JvmIncrementalParagraphLayoutSession`. Les
+deux côtés amorcent les assets du catalogue et du resolver hors chronomètre.
+Un échantillon froid ouvre sa session dans l’intervalle mesuré ; un échantillon
+chaud conserve une session et son backend HarfBuzz, amorcés par un layout hors
+mesure. Chaque échantillon fournit une nouvelle version de texte, compose le
+paragraphe entier et consomme des glyphes certifiés. Les fermetures de session
+et de resolver sont exclues de ces intervalles.
+
+Les champs de session rapportent les octets source copiés dans les buffers
+natifs retenus pendant l’échantillon, l’estimation HarfBuzz retenue en fin
+d’échantillon et la réutilisation d’un backend existant (0 froid, 1 chaud,
+déterminée par le cycle de vie du runner). Le compte froid provient des octets
+inactifs de la session : ces petites fixtures tiennent dans la politique par
+défaut sans éviction. Les échantillons chauds ne demandent aucune nouvelle copie.
+Ce champ est distinct des octets source fournis au catalogue.
+
+`JvmPreparedFontCachePolicy` borne les entrées, les octets source, les octets
+natifs estimés et leur somme, fontes actives et inactives comprises. L’admission
+est réservée sous verrou avant l’allocation native ; seules les fontes inactives
+sont évincées. Une admission impossible retourne `FontError.ResourceLimitExceeded`
+sans layout partiel. Cette politique est indépendante du pool d’assets de rendu
+et du cache de layout incrémental. `preparedFontCacheUsage` fournit un instantané
+immuable lisible avant composition et après fermeture. Le backend fermé libère
+immédiatement les fontes inactives, puis les actives à leur dernière restitution
+de lease (emprunt de ressource), sans réouverture.
+
+L’estimateur `harfbuzz-14.3.0-4x-source-plus-256k-v1` compte 256 Kio plus quatre
+fois la longueur source pour les objets HarfBuzz, accélérateurs et caches retenus ;
+le buffer source est compté séparément. Cette estimation prudente et versionnée
+est une charge de politique, pas un compteur d’allocation instrumenté ni une borne
+prouvée pour toute fonte. Les buffers de shaping temporaires, copies JVM, métadonnées
+de l’allocateur, bibliothèque partagée et RSS (mémoire résidente du processus)
+en sont exclus. Les octets réellement alloués et comptes d’allocations natifs
+restent `unavailable`. Latences, allocations du thread et variations du tas sont
+des mesures observées ; l’estimation native ne mesure jamais la mémoire totale
+du processus.
 
 ## Étapes portables TrueType
 
@@ -132,8 +174,8 @@ documentées. Il inclut aussi les octets source fournis au catalogue pendant
 l’intervalle, les octets et pixels bitmap décodés, ainsi que le nombre de
 nœuds de peinture normalisés.
 
-Les quatre champs d’assets d’opération sont disponibles uniquement pour les
-profils consommateurs publics de paragraphe. Les profils directs de glyphes et
+Les quatre champs d’assets d’opération sont disponibles pour les profils
+consommateurs publics de paragraphe et de session. Les profils directs de glyphes et
 les étapes TrueType portables les indiquent comme `unavailable` (indisponibles),
 car ces routes n’exécutent pas une composition de paragraphe bornée par une
 opération.
@@ -148,7 +190,7 @@ de plateforme. Le champ de mémoire JVM retenue est une observation du tas pour
 ce runner, non une comptabilité du cache ou de toute la mémoire du processus ;
 il peut être négatif après GC.
 
-Le runner n’impose aucun seuil de latence. `check` ne lance aucune mesure sans
-la variable d’environnement opt-in et ce travail n’ajoute ni renderer (moteur
+Le runner n’impose aucun seuil de latence. `check` exclut la tâche de mesure,
+même si la variable opt-in est définie, et ce travail n’ajoute ni renderer (moteur
 de rendu), ni rasterizer (moteur de pixellisation), ni API GPU, ni bridge
 (pont) natif.
