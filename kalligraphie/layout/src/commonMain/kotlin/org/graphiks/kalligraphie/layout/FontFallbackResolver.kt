@@ -50,25 +50,46 @@ import org.graphiks.kalligraphie.api.toDiagnostic
 
 /** Resolves one captured line input into shaped runs without leaking temporary assets. */
 internal object FontFallbackResolver {
-    fun resolve(request: MultiFontEditableLineRequest): FontOperationResult<FontFallbackResolution> = resolve(
-        request,
-        GlyphMaterializationProofs(),
-        EditorOperationContext.create(request.operationProfile, request.cancellationToken),
-    )
+    fun resolve(request: MultiFontEditableLineRequest): FontOperationResult<FontFallbackResolution> {
+        val pool = OperationRenderAssetPool(request.operationProfile.materializationResourceProfile)
+        var closeDiagnostics = emptyList<FontDiagnostic>()
+        val result = try {
+            resolve(
+                request,
+                GlyphMaterializationProofs(),
+                EditorOperationContext.create(request.operationProfile, request.cancellationToken),
+                pool,
+            )
+        } finally {
+            closeDiagnostics = pool.close()
+        }
+        return result.afterClosure(pool.closeFailure, closeDiagnostics)
+    }
 
     fun resolve(
         request: MultiFontEditableLineRequest,
         proofs: GlyphMaterializationProofs,
-    ): FontOperationResult<FontFallbackResolution> = resolve(
-        request,
-        proofs,
-        EditorOperationContext.create(request.operationProfile, request.cancellationToken),
-    )
+    ): FontOperationResult<FontFallbackResolution> {
+        val pool = OperationRenderAssetPool(request.operationProfile.materializationResourceProfile)
+        var closeDiagnostics = emptyList<FontDiagnostic>()
+        val result = try {
+            resolve(
+                request,
+                proofs,
+                EditorOperationContext.create(request.operationProfile, request.cancellationToken),
+                pool,
+            )
+        } finally {
+            closeDiagnostics = pool.close()
+        }
+        return result.afterClosure(pool.closeFailure, closeDiagnostics)
+    }
 
     fun resolve(
         request: MultiFontEditableLineRequest,
         proofs: GlyphMaterializationProofs,
         context: EditorOperationContext,
+        pool: OperationRenderAssetPool,
     ): FontOperationResult<FontFallbackResolution> = resolve(
         ResolutionRequest(
             snapshot = request.snapshot,
@@ -87,6 +108,7 @@ internal object FontFallbackResolver {
         ),
         proofs,
         context,
+        pool,
     )
 
     /** Resolves one paragraph-local range without observing unrelated snapshot text. */
@@ -97,15 +119,25 @@ internal object FontFallbackResolver {
         unicodeAnalysis: UnicodeAnalysis,
         materialization: EditableLineMaterialization,
         proofs: GlyphMaterializationProofs = GlyphMaterializationProofs(),
-    ): FontOperationResult<FontFallbackResolution> = resolveRange(
-        request,
-        sourceRange,
-        shapingContextRange,
-        unicodeAnalysis,
-        materialization,
-        proofs,
-        EditorOperationContext.create(request.operationProfile, request.cancellationToken),
-    )
+    ): FontOperationResult<FontFallbackResolution> {
+        val pool = OperationRenderAssetPool(request.operationProfile.materializationResourceProfile)
+        var closeDiagnostics = emptyList<FontDiagnostic>()
+        val result = try {
+            resolveRange(
+                request,
+                sourceRange,
+                shapingContextRange,
+                unicodeAnalysis,
+                materialization,
+                proofs,
+                EditorOperationContext.create(request.operationProfile, request.cancellationToken),
+                pool,
+            )
+        } finally {
+            closeDiagnostics = pool.close()
+        }
+        return result.afterClosure(pool.closeFailure, closeDiagnostics)
+    }
 
     fun resolveRange(
         request: ParagraphLayoutRequest,
@@ -115,6 +147,7 @@ internal object FontFallbackResolver {
         materialization: EditableLineMaterialization,
         proofs: GlyphMaterializationProofs,
         context: EditorOperationContext,
+        pool: OperationRenderAssetPool,
     ): FontOperationResult<FontFallbackResolution> = resolve(
         ResolutionRequest(
             snapshot = request.snapshot,
@@ -133,12 +166,14 @@ internal object FontFallbackResolver {
         ),
         proofs,
         context,
+        pool,
     )
 
     private fun resolve(
         request: ResolutionRequest,
         proofs: GlyphMaterializationProofs,
         context: EditorOperationContext,
+        pool: OperationRenderAssetPool,
     ): FontOperationResult<FontFallbackResolution> {
         context.sourceLimit(request.snapshot)?.let { return operationLimitFailure(it) }
         context.scalarLimit(request.snapshot)?.let { return operationLimitFailure(it) }
@@ -193,7 +228,7 @@ internal object FontFallbackResolver {
                     shaped += cached
                     return@forEach
                 }
-                when (val attempted = shapeAndValidate(group, request, proofs, fallbackDiagnostics)) {
+                when (val attempted = shapeAndValidate(group, request, proofs, pool, fallbackDiagnostics)) {
                     is Attempt.Success -> {
                         shapedGroups[signature] = attempted.runs
                         shaped += attempted.runs
@@ -217,7 +252,11 @@ internal object FontFallbackResolver {
                     val materialization = request.materialization as? EditableLineMaterialization.Renderable
                     val profiles = if (materialization == null || assigned.glyphless) emptyList() else shaped
                         .filter { run -> run.fontInstanceKey == assigned.instance.key && intersection(run.range, assigned.unit.range) != null }
-                        .mapNotNull { run -> proofs.find(assigned.instance, materialization, run.glyphs.map { it.glyphId })?.assetKey?.representationProfile }
+                        .mapNotNull { run ->
+                            proofs.find(assigned.instance, materialization, run.glyphs.map { it.glyphId }, pool)
+                                ?.assetKey
+                                ?.representationProfile
+                        }
                         .distinct()
                     profiles.ifEmpty { listOf(null) }.forEach { profile ->
                         fallbackDiagnostics += request.decision(assigned.unit, assigned.record.id,
@@ -406,6 +445,7 @@ internal object FontFallbackResolver {
         group: List<AssignedUnit>,
         request: ResolutionRequest,
         proofs: GlyphMaterializationProofs,
+        pool: OperationRenderAssetPool,
         fallbackDiagnostics: MutableList<FontFallbackDiagnostic>,
     ): Attempt {
         val first = group.first()
@@ -463,7 +503,7 @@ internal object FontFallbackResolver {
             }
             val materialization = request.materialization
             if (materialization is EditableLineMaterialization.Renderable) {
-                when (val validation = validateMaterialization(fragmentRun, first.instance, materialization, request, proofs) { reason, profile ->
+                when (val validation = validateMaterialization(fragmentRun, first.instance, materialization, request, proofs, pool) { reason, profile ->
                     reject(FontFallbackStage.Materialization, reason, profile)
                 }) {
                     Validation.Valid -> Unit
@@ -561,9 +601,13 @@ internal object FontFallbackResolver {
         materialization: EditableLineMaterialization.Renderable,
         request: ResolutionRequest,
         proofs: GlyphMaterializationProofs,
+        pool: OperationRenderAssetPool,
         onRejection: (FontFallbackReason, GlyphRepresentationProfile) -> Unit,
     ): Validation {
-        if (materialization.requirements.acceptedProfiles.size == 1 && proofs.find(instance, materialization, shaped.glyphs.map { it.glyphId }) != null) {
+        if (
+            materialization.requirements.acceptedProfiles.size == 1 &&
+            proofs.find(instance, materialization, shaped.glyphs.map { it.glyphId }, pool) != null
+        ) {
             return Validation.Valid
         }
         if (materialization.requirements.acceptedProfiles.size > 1) {
@@ -577,7 +621,7 @@ internal object FontFallbackResolver {
                         portableDataRequired = materialization.requirements.portableDataRequired,
                     ),
                 )
-                when (val validation = validateMaterialization(shaped, instance, profileMaterialization, request, proofs, onRejection)) {
+                when (val validation = validateMaterialization(shaped, instance, profileMaterialization, request, proofs, pool, onRejection)) {
                     Validation.Valid -> return Validation.Valid
                     is Validation.Rejected -> if (firstRejection == null) firstRejection = validation
                     is Validation.Failed -> return validation
@@ -589,11 +633,18 @@ internal object FontFallbackResolver {
             )
         }
         val asset = when (
-            val acquired = instance.acquireMaterializationAsset(materialization)
+            val acquired = pool.acquire(
+                instance,
+                materialization,
+                materialization.requirements.acceptedProfiles.single(),
+            )
         ) {
             is FontOperationResult.Success -> acquired.value
             is FontOperationResult.Failure -> {
-                if (acquired.error.isTerminalMaterializationFailure()) return Validation.Failed(acquired.error, acquired.diagnostics)
+                if (
+                    acquired.error.isTerminalMaterializationFailure() ||
+                    acquired.error.code == OperationRenderAssetPool.ESTIMATE_UNAVAILABLE_CODE
+                ) return Validation.Failed(acquired.error, acquired.diagnostics)
                 onRejection(acquired.error.materializationReason(), materialization.requirements.acceptedProfiles.single())
                 return Validation.Rejected(acquired.diagnostics + acquired.error.toDiagnostic())
             }
@@ -602,77 +653,54 @@ internal object FontFallbackResolver {
         val routes = mutableMapOf<org.graphiks.kalligraphie.api.GlyphId, GlyphMaterializationRoute>()
         var validation: Validation = Validation.Valid
         var rejectionReason = FontFallbackReason.AssetIncompatible
-        try {
-            val variantSnapshot = asset.key.variantSnapshot ?: FontRenderVariantSnapshot.default
-            if (
-                asset.key.fontInstanceKey != instance.key ||
-                asset.key.generation != materialization.resolver.generation ||
-                asset.key.variant != materialization.renderVariant.key ||
-                variantSnapshot != materialization.renderVariant ||
-                asset.key.representationProfile !in materialization.requirements.acceptedProfiles
-            ) {
-                validation = Validation.Rejected(
-                    listOf(rejectionDiagnostic("Acquired render asset does not identify the shaped instance, visual variant, accepted profile, and generation.")),
-                )
-            } else {
-                shaped.glyphs.forEach { glyph ->
-                    if (validation != Validation.Valid) return@forEach
-                    if (routes.containsKey(glyph.glyphId)) return@forEach
-                    when (val resolved = asset.resolveGlyph(FontGlyphRequest(glyph.glyphId), request.cancellationToken)) {
-                        is FontOperationResult.Success -> when (val representation = resolved.value) {
-                            GlyphRepresentation.Empty -> routes[glyph.glyphId] = GlyphMaterializationRoute.EMPTY
-                            is GlyphRepresentation.Outline -> if (
-                                asset.key.representationProfile !is org.graphiks.kalligraphie.api.OutlineProfile ||
-                                representation.outline.glyphId != glyph.glyphId.value
-                            ) {
-                                validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved outline does not match the certified profile and final shaped glyph identifier.")))
-                            } else {
-                                routes[glyph.glyphId] = GlyphMaterializationRoute.OUTLINE
-                            }
-                            is GlyphRepresentation.Paint -> if (asset.key.representationProfile !is org.graphiks.kalligraphie.api.PaintGraphProfile) {
-                                validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved paint graph does not match the certified paint profile.")))
-                            } else {
-                                routes[glyph.glyphId] = GlyphMaterializationRoute.PAINT_GRAPH
-                            }
-                            is GlyphRepresentation.Bitmap -> if (
-                                asset.key.representationProfile !is org.graphiks.kalligraphie.api.BitmapProfile ||
-                                representation.bitmap.glyphId != glyph.glyphId
-                            ) {
-                                validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved bitmap does not match the certified bitmap profile and final shaped glyph identifier.")))
-                            } else {
-                                routes[glyph.glyphId] = GlyphMaterializationRoute.BITMAP
-                            }
+        val variantSnapshot = asset.key.variantSnapshot ?: FontRenderVariantSnapshot.default
+        if (
+            asset.key.fontInstanceKey != instance.key ||
+            asset.key.generation != materialization.resolver.generation ||
+            asset.key.variant != materialization.renderVariant.key ||
+            variantSnapshot != materialization.renderVariant ||
+            asset.key.representationProfile !in materialization.requirements.acceptedProfiles
+        ) {
+            validation = Validation.Rejected(
+                listOf(rejectionDiagnostic("Acquired render asset does not identify the shaped instance, visual variant, accepted profile, and generation.")),
+            )
+        } else {
+            shaped.glyphs.forEach { glyph ->
+                if (validation != Validation.Valid) return@forEach
+                if (routes.containsKey(glyph.glyphId)) return@forEach
+                when (val resolved = asset.resolveGlyph(FontGlyphRequest(glyph.glyphId), request.cancellationToken)) {
+                    is FontOperationResult.Success -> when (val representation = resolved.value) {
+                        GlyphRepresentation.Empty -> routes[glyph.glyphId] = GlyphMaterializationRoute.EMPTY
+                        is GlyphRepresentation.Outline -> if (
+                            asset.key.representationProfile !is org.graphiks.kalligraphie.api.OutlineProfile ||
+                            representation.outline.glyphId != glyph.glyphId.value
+                        ) {
+                            validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved outline does not match the certified profile and final shaped glyph identifier.")))
+                        } else {
+                            routes[glyph.glyphId] = GlyphMaterializationRoute.OUTLINE
                         }
+                        is GlyphRepresentation.Paint -> if (asset.key.representationProfile !is org.graphiks.kalligraphie.api.PaintGraphProfile) {
+                            validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved paint graph does not match the certified paint profile.")))
+                        } else {
+                            routes[glyph.glyphId] = GlyphMaterializationRoute.PAINT_GRAPH
+                        }
+                        is GlyphRepresentation.Bitmap -> if (
+                            asset.key.representationProfile !is org.graphiks.kalligraphie.api.BitmapProfile ||
+                            representation.bitmap.glyphId != glyph.glyphId
+                        ) {
+                            validation = Validation.Rejected(listOf(rejectionDiagnostic("Resolved bitmap does not match the certified bitmap profile and final shaped glyph identifier.")))
+                        } else {
+                            routes[glyph.glyphId] = GlyphMaterializationRoute.BITMAP
+                        }
+                    }
 
-                        is FontOperationResult.Failure -> {
-                            rejectionReason = resolved.error.materializationReason()
-                            validation = if (resolved.error.isTerminalMaterializationFailure()) Validation.Failed(resolved.error, resolved.diagnostics)
-                            else Validation.Rejected(resolved.diagnostics + resolved.error.toDiagnostic())
-                        }
-                        is FontOperationResult.Cancelled -> validation = Validation.Cancelled(resolved.diagnostics)
+                    is FontOperationResult.Failure -> {
+                        rejectionReason = resolved.error.materializationReason()
+                        validation = if (resolved.error.isTerminalMaterializationFailure()) Validation.Failed(resolved.error, resolved.diagnostics)
+                        else Validation.Rejected(resolved.diagnostics + resolved.error.toDiagnostic())
                     }
+                    is FontOperationResult.Cancelled -> validation = Validation.Cancelled(resolved.diagnostics)
                 }
-            }
-        } finally {
-            when (val closed = asset.close()) {
-                is FontOperationResult.Failure -> {
-                    val priorDiagnostics = when (val prior = validation) {
-                        Validation.Valid -> emptyList()
-                        is Validation.Rejected -> prior.diagnostics
-                        is Validation.Failed -> prior.diagnostics
-                        is Validation.Cancelled -> prior.diagnostics
-                    }
-                    val closeDiagnostics = closed.diagnostics + closed.error.toDiagnostic()
-                    validation = when (val prior = validation) {
-                        is Validation.Cancelled -> Validation.Cancelled(priorDiagnostics + closeDiagnostics)
-                        is Validation.Failed -> Validation.Failed(prior.error, priorDiagnostics + closeDiagnostics)
-                        else -> Validation.Failed(closed.error, priorDiagnostics + closeDiagnostics)
-                    }
-                }
-                is FontOperationResult.Cancelled -> if (validation !is Validation.Failed) {
-                    validation = Validation.Cancelled(closed.diagnostics)
-                }
-                is FontOperationResult.Success -> Unit
             }
         }
         if (validation == Validation.Valid) proofs.record(asset.key, routes)
@@ -757,23 +785,6 @@ internal object FontFallbackResolver {
     private fun FallbackUnit.hasSameFragmentClassifications(other: FallbackUnit): Boolean =
         fragments.size == other.fragments.size && fragments.zip(other.fragments).all { (left, right) ->
             left.script == right.script && left.language == right.language && left.bidiLevel == right.bidiLevel
-        }
-
-    private fun FontInstance.acquireMaterializationAsset(
-        materialization: EditableLineMaterialization.Renderable,
-    ): FontOperationResult<org.graphiks.kalligraphie.api.FontRenderAssetHandle> =
-        if (materialization.renderVariant == FontRenderVariantSnapshot.default) {
-            acquireRenderAsset(
-                resolver = materialization.resolver,
-                variant = materialization.variant,
-                requirements = materialization.requirements,
-            )
-        } else {
-            acquireRenderAsset(
-                resolver = materialization.resolver,
-                renderVariant = materialization.renderVariant,
-                requirements = materialization.requirements,
-            )
         }
 
     private fun unresolved(
@@ -1035,5 +1046,20 @@ internal object FontFallbackResolver {
     private fun operationLimitFailure(exceeded: EditorOperationLimitExceeded): FontOperationResult.Failure {
         val error = FontError.EditorOperationLimitExceeded(exceeded)
         return FontOperationResult.Failure(error, listOf(error.toDiagnostic()))
+    }
+
+    private fun FontOperationResult<FontFallbackResolution>.afterClosure(
+        closeFailure: FontError?,
+        closeDiagnostics: List<FontDiagnostic>,
+    ): FontOperationResult<FontFallbackResolution> {
+        return when (this) {
+            is FontOperationResult.Success -> if (closeFailure == null) {
+                FontOperationResult.Success(value, diagnostics + closeDiagnostics)
+            } else {
+                FontOperationResult.Failure(closeFailure, diagnostics + closeDiagnostics)
+            }
+            is FontOperationResult.Failure -> FontOperationResult.Failure(error, diagnostics + closeDiagnostics)
+            is FontOperationResult.Cancelled -> FontOperationResult.Cancelled(diagnostics + closeDiagnostics)
+        }
     }
 }

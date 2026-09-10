@@ -28,6 +28,7 @@ import org.graphiks.kalligraphie.api.GlyphId
 import org.graphiks.kalligraphie.api.GlyphMetrics
 import org.graphiks.kalligraphie.api.GlyphPaintIR
 import org.graphiks.kalligraphie.api.GlyphPaintNode
+import org.graphiks.kalligraphie.api.GlyphRepresentationProfile
 import org.graphiks.kalligraphie.api.PaintGraphProfile
 import org.graphiks.kalligraphie.api.BitmapProfile
 import org.graphiks.kalligraphie.api.GlyphRepresentation
@@ -149,6 +150,22 @@ internal data class TrueTypeFontInstance(
 
     override fun copyOpenTypeData(): FontOperationResult<OpenTypeFontData> =
         FontOperationResult.Success(OpenTypeFontData(faceId, resource.preparedFont.copySourceBytes()))
+
+    override fun estimateRenderAssetBytes(
+        renderVariant: FontRenderVariantSnapshot,
+        profile: GlyphRepresentationProfile,
+    ): FontOperationResult<Long> = if (isSupportedProfile(profile)) {
+        FontOperationResult.Success(
+            estimateEmbeddedRenderAssetBytes(resource, key, renderVariant, profile),
+        )
+    } else {
+        failure(
+            FontError.UnsupportedRepresentationProfile(
+                "The embedded font cannot estimate an unsupported render-asset profile.",
+                FontDiagnosticLocation.FaceId(faceId),
+            ),
+        )
+    }
 
     override fun acquireRenderAsset(
         resolver: FontAssetResolverHandle,

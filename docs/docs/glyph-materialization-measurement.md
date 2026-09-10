@@ -43,6 +43,13 @@ facade deliberately opens and closes its documented shaping backend for every
 call, so these warm profiles report asset-cache reuse rather than hidden
 backend reuse.
 
+Each consumer sample also reports the maximum number of operation-owned render
+assets simultaneously live, their conservative estimated bytes, distinct asset
+openings, and final-glyph proofs reused from earlier materialization in the same
+operation. These are scenario measurements reconstructed from immutable
+certificates and provider estimates. They are neither a time constraint nor
+proof of a particular cache or pooling algorithm.
+
 ## Portable TrueType stages
 
 The ten additional portable TrueType profiles use Liberation Sans Regular and
@@ -104,6 +111,11 @@ allocations, and a signed used-heap delta sampled after the documented forced
 GC requests. It also records the input source bytes supplied to an embedded
 catalog in the timed interval, decoded bitmap bytes and pixels, and normalized
 paint-node counts.
+
+The four operation-asset fields are available only for the public paragraph
+consumer profiles. Direct-glyph and portable TrueType stage profiles report
+them as `unavailable` because those routes do not execute an operation-scoped
+paragraph composition.
 
 Source-byte values are fixture buffer sizes supplied to the portable catalog;
 they are not filesystem-I/O counters. A warm profile reports zero source bytes

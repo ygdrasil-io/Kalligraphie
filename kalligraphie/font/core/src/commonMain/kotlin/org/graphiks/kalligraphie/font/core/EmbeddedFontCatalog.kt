@@ -23,6 +23,7 @@ import org.graphiks.kalligraphie.api.FontRenderAssetKey
 import org.graphiks.kalligraphie.api.FontRenderVariantKey
 import org.graphiks.kalligraphie.api.FontRenderVariantSnapshot
 import org.graphiks.kalligraphie.api.FontInstanceDescriptor
+import org.graphiks.kalligraphie.api.FontInstanceKey
 import org.graphiks.kalligraphie.api.FontSource
 import org.graphiks.kalligraphie.api.FontSourceId
 import org.graphiks.kalligraphie.api.FontOperationResult.Success
@@ -96,6 +97,7 @@ public class EmbeddedFontCatalog(
         resources = ids.zip(capturedEntries).associate { (id, entry) ->
             id to PreparedFontResource(
                 preparedFont = PreparedTrueTypeFont(entry.source, entry.parsedFont),
+                sourceByteSize = entry.source.sizeInBytes,
                 cachePolicy = cachePolicy,
             )
         }
@@ -485,6 +487,7 @@ internal class FontHandleLifecycle(
 @OptIn(ExperimentalAtomicApi::class)
 internal class PreparedFontResource(
     internal val preparedFont: PreparedTrueTypeFont,
+    internal val sourceByteSize: Int,
     cachePolicy: FontMaterializationCachePolicy,
 ) {
     private val leaseCount = AtomicInt(0)
@@ -521,6 +524,39 @@ internal class PreparedFontResource(
             }
         }
     }
+}
+
+/** Conservative retained-byte estimate for one embedded operation-owned render asset. */
+internal fun estimateEmbeddedRenderAssetBytes(
+    resource: PreparedFontResource,
+    instanceKey: FontInstanceKey,
+    renderVariant: FontRenderVariantSnapshot,
+    profile: GlyphRepresentationProfile,
+): Long {
+    var total = 512L
+        .saturatingAdd(resource.sourceByteSize.toLong())
+        .saturatingAdd(instanceKey.geometry.normalizedAxes.size.toLong().saturatingMultiply(32L))
+        .saturatingAdd(renderVariant.estimatedRetainedBytes())
+        .saturatingAdd(profile.estimatedRetainedBytes())
+    total = when (profile) {
+        is OutlineProfile -> total
+            .saturatingAdd(profile.maxBytes.toLong())
+            .saturatingAdd(profile.maxPoints.toLong().saturatingMultiply(48L))
+            .saturatingAdd(profile.maxContours.toLong().saturatingMultiply(24L))
+            .saturatingAdd(profile.maxCompositeComponents.toLong().saturatingMultiply(64L))
+        is PaintGraphProfile -> total
+            .saturatingAdd(profile.limits.maxSourceBytes.toLong())
+            .saturatingAdd(profile.limits.maxDecodedPaletteBytes.toLong())
+            .saturatingAdd(profile.limits.maxNodes.toLong().saturatingMultiply(96L))
+            .saturatingAdd(profile.limits.maxReferences.toLong().saturatingMultiply(8L))
+            .saturatingAdd(profile.outlineProfile.maxBytes.toLong())
+        is BitmapProfile -> total
+            .saturatingAdd(profile.limits.maxIndexTableBytes.toLong())
+            .saturatingAdd(profile.limits.maxBitmapTableBytes.toLong())
+            .saturatingAdd(profile.limits.maxTotalDecodedBytes.toLong())
+        is NativeHandleProfile -> total
+    }
+    return total
 }
 
 internal fun cachedRepresentationRetainedBytes(

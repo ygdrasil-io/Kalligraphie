@@ -49,6 +49,15 @@ volontairement son backend (moteur interne) de shaping
 (façonnage) documenté à chaque appel : ces profils chauds mesurent donc la
 réutilisation du cache d’assets, jamais une réutilisation cachée du backend.
 
+Chaque échantillon consommateur rapporte aussi le maximum d’assets possédés par
+l’opération simultanément vivants, leur borne conservatrice en octets, les
+ouvertures d’asset distinctes et les preuves de glyphes finaux réutilisées après
+une matérialisation antérieure dans la même opération. Ces valeurs sont des
+mesures de scénario reconstruites depuis les certificats immuables et les
+estimations du provider (fournisseur). Elles ne constituent ni une contrainte
+de temps, ni la preuve d’un algorithme particulier de cache ou de pool (réserve
+réutilisable).
+
 ## Étapes portables TrueType
 
 Les dix profils TrueType portables supplémentaires utilisent Liberation Sans
@@ -122,6 +131,12 @@ variation signée du tas JVM relevée après les demandes de GC (ramasse-miettes
 documentées. Il inclut aussi les octets source fournis au catalogue pendant
 l’intervalle, les octets et pixels bitmap décodés, ainsi que le nombre de
 nœuds de peinture normalisés.
+
+Les quatre champs d’assets d’opération sont disponibles uniquement pour les
+profils consommateurs publics de paragraphe. Les profils directs de glyphes et
+les étapes TrueType portables les indiquent comme `unavailable` (indisponibles),
+car ces routes n’exécutent pas une composition de paragraphe bornée par une
+opération.
 
 Les octets source sont la taille du buffer (tampon mémoire) de fixture donné au catalogue
 portable ; ce ne sont pas des compteurs d’entrées/sorties fichier. Un profil

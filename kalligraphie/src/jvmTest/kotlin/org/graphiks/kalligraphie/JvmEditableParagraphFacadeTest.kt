@@ -46,6 +46,7 @@ import org.graphiks.kalligraphie.api.LayoutUnit
 import org.graphiks.kalligraphie.api.LineLayout
 import org.graphiks.kalligraphie.api.LineVerticalMetrics
 import org.graphiks.kalligraphie.api.LogicalNavigationDirection
+import org.graphiks.kalligraphie.api.MaterializationResourceProfile
 import org.graphiks.kalligraphie.api.OpenTypeFeature
 import org.graphiks.kalligraphie.api.OutlineProfile
 import org.graphiks.kalligraphie.api.ParagraphLayoutError
@@ -256,6 +257,114 @@ class JvmEditableParagraphFacadeTest {
     private fun diagnosticOutlineProfile(): OutlineProfile = OutlineProfile(
         maxBytes = 1_000_000, maxContours = 256, maxPoints = 16_384, maxCompositeDepth = 8, maxCompositeComponents = 256,
     )
+
+    @Test
+    fun materializationFailureForOneUnitKeepsNeighboringRealRunsExactly() {
+        val fixture = fontFixture("A\u044BA", listOf(
+            FontFixture("dejavu/DejaVuSans.ttf", "DejaVu Sans"),
+            FontFixture("liberation/LiberationSans-Regular.ttf", "Liberation Sans"),
+        ))
+        val resolver = assertIs<FontOperationResult.Success<FontAssetResolverHandle>>(
+            fixture.catalog.openAssetResolver(),
+        ).value
+        try {
+            fun render(maxContours: Int): LineLayout {
+                val materialization = EditableLineMaterialization.Renderable(
+                    resolver = resolver,
+                    variant = FontRenderVariantKey.default,
+                    outlineProfile = diagnosticOutlineProfile().copy(maxContours = maxContours),
+                )
+                return assertIs<ParagraphLayoutResult.Success>(
+                    JvmEditableParagraphFacade.layout(
+                        request(
+                            fixture,
+                            constraints(width = 10_000f, top = 0f, height = 1_200f),
+                            language = "en",
+                            materialization = materialization,
+                        ),
+                    ),
+                ).layout.lines.single()
+            }
+
+            val baseline = render(maxContours = 256)
+            val fallback = render(maxContours = 3)
+            fun glyphAt(line: LineLayout, scalar: Int) = line.positionedGlyphRuns
+                .flatMap { run -> run.glyphs.map { glyph -> run.fontInstanceKey.face to glyph } }
+                .single { (_, glyph) -> glyph.mappedSourceRange == range(fixture.snapshot, scalar, scalar + 1) }
+
+            assertEquals(fixture.latinFace, glyphAt(baseline, 1).first)
+            assertEquals(fixture.arabicFace, glyphAt(fallback, 1).first)
+            listOf(0, 2).forEach { scalar ->
+                val expected = glyphAt(baseline, scalar)
+                val actual = glyphAt(fallback, scalar)
+                assertEquals(expected.first, actual.first)
+                assertEquals(expected.second.shapedGlyph.glyphId, actual.second.shapedGlyph.glyphId)
+                assertEquals(expected.second.advance, actual.second.advance)
+            }
+        } finally {
+            assertIs<FontOperationResult.Success<Unit>>(resolver.close())
+        }
+    }
+
+    @Test
+    fun renderableParagraphRejectsBeforeExceedingItsLiveAssetBudget() {
+        val fixture = fontFixture("A\u0633", listOf(
+            FontFixture("liberation/LiberationSans-Regular.ttf", "Liberation Sans"),
+            FontFixture("amiri/Amiri-Regular.ttf", "Amiri"),
+        ))
+        val resolver = assertIs<FontOperationResult.Success<FontAssetResolverHandle>>(
+            fixture.catalog.openAssetResolver(),
+        ).value
+        val materialization = EditableLineMaterialization.Renderable(
+            resolver = resolver,
+            variant = FontRenderVariantKey.default,
+            outlineProfile = diagnosticOutlineProfile(),
+        )
+        try {
+            val limited = assertIs<ParagraphLayoutResult.Failure>(
+                JvmEditableParagraphFacade.layout(
+                    request(
+                        fixture,
+                        constraints(width = 10_000f, top = 0f, height = 1_200f),
+                        materialization = materialization,
+                        operationProfile = EditorOperationProfile(
+                            materializationResourceProfile = MaterializationResourceProfile(
+                                maxLiveAssets = 1,
+                                maxEstimatedAssetBytes = Long.MAX_VALUE,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            val exceeded = assertIs<ParagraphLayoutError.OperationLimitExceeded>(limited.error).limit
+            assertEquals(EditorOperationLimitKind.MATERIALIZATION_ASSETS, exceeded.kind)
+            assertEquals(1L, exceeded.maximum)
+            assertEquals(2L, exceeded.observed)
+
+            val accepted = assertIs<ParagraphLayoutResult.Success>(
+                JvmEditableParagraphFacade.layout(
+                    request(
+                        fixture,
+                        constraints(width = 10_000f, top = 0f, height = 1_200f),
+                        materialization = materialization,
+                        operationProfile = EditorOperationProfile(
+                            materializationResourceProfile = MaterializationResourceProfile(
+                                maxLiveAssets = 2,
+                                maxEstimatedAssetBytes = Long.MAX_VALUE,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            val visibleGlyphs = accepted.layout.lines.flatMap { line ->
+                line.positionedGlyphRuns.flatMap { run -> run.glyphs }
+            }
+            assertTrue(visibleGlyphs.isNotEmpty())
+            assertTrue(visibleGlyphs.all { glyph -> glyph.materializationCertificate != null })
+        } finally {
+            assertIs<FontOperationResult.Success<Unit>>(resolver.close())
+        }
+    }
 
     @Test
     fun publicFacadeCertifiesLatinHebrewAndArabicFallbackFromMainArtifact() {

@@ -143,6 +143,10 @@ internal data class GlyphMaterializationMeasurementProfile(
     val normalizedNodes: GlyphMaterializationMeasurementValue,
     val decodedPixels: GlyphMaterializationMeasurementValue,
     val cancellationDelay: GlyphMaterializationMeasurementValue,
+    val maximumLiveAssets: GlyphMaterializationMeasurementValue,
+    val estimatedAssetBytes: GlyphMaterializationMeasurementValue,
+    val assetOpenings: GlyphMaterializationMeasurementValue,
+    val operationReuses: GlyphMaterializationMeasurementValue,
 )
 
 internal data class GlyphMaterializationMeasurementReport(
@@ -183,6 +187,10 @@ internal data class GlyphMaterializationMeasurementReport(
             appendMeasurement("Normalized nodes", profile.normalizedNodes)
             appendMeasurement("Decoded pixels", profile.decodedPixels)
             appendMeasurement("Cancellation delay", profile.cancellationDelay)
+            appendMeasurement("Maximum live assets", profile.maximumLiveAssets)
+            appendMeasurement("Estimated asset bytes", profile.estimatedAssetBytes)
+            appendMeasurement("Asset openings", profile.assetOpenings)
+            appendMeasurement("Operation reuses", profile.operationReuses)
         }
     }
 
@@ -488,7 +496,7 @@ internal object GlyphMaterializationBenchmark {
             val sample = timed {
                 val opened = openConsumerScenario(scenario)
                 try {
-                    observeConsumerLayout(layoutConsumerScenario(opened), scenario, scenario.sourceBytes)
+                    observeConsumerLayout(layoutConsumerScenario(opened), opened, scenario.sourceBytes)
                 } finally {
                     opened.close()
                 }
@@ -511,10 +519,10 @@ internal object GlyphMaterializationBenchmark {
     ) { record ->
         val opened = openConsumerScenario(scenario)
         try {
-            observeConsumerLayout(layoutConsumerScenario(opened), scenario, sourceBytes = 0L)
+            observeConsumerLayout(layoutConsumerScenario(opened), opened, sourceBytes = 0L)
             repeat(warmupIterations + iterations) { index ->
                 val sample = timed {
-                    observeConsumerLayout(layoutConsumerScenario(opened), scenario, sourceBytes = 0L)
+                    observeConsumerLayout(layoutConsumerScenario(opened), opened, sourceBytes = 0L)
                 }
                 if (index >= warmupIterations) record(sample)
             }
@@ -922,9 +930,10 @@ internal object GlyphMaterializationBenchmark {
 
     private fun observeConsumerLayout(
         result: ParagraphLayoutResult,
-        scenario: ConsumerScenario,
+        opened: OpenConsumerScenario,
         sourceBytes: Long,
     ): Observation {
+        val scenario = opened.scenario
         val layout = when (result) {
             is ParagraphLayoutResult.Success -> result.layout
             is ParagraphLayoutResult.Failure -> error("Consumer measurement failed: ${result.error}")
@@ -943,8 +952,38 @@ internal object GlyphMaterializationBenchmark {
         check(faceCount == scenario.expectedFaceCount) {
             "Consumer scenario ${scenario.id} expected ${scenario.expectedFaceCount} selected faces but received $faceCount."
         }
+        val assetKeys = glyphs.map { glyph -> checkNotNull(glyph.materializationCertificate).assetKey }.distinct()
+        val estimatedAssetBytes = assetKeys.fold(0L) { total, key ->
+            val requirements = FontAccessRequirementsSnapshot.renderable(
+                acceptedProfiles = listOf(key.representationProfile),
+                portableDataRequired = scenario.requirements.portableDataRequired,
+            )
+            val face = success(opened.catalog.resolveFace(key.fontInstanceKey.face, requirements))
+            val instance = success(
+                face.instantiate(
+                    FontInstanceDescriptor(
+                        layoutSize = key.fontInstanceKey.layoutSize,
+                        geometry = key.fontInstanceKey.geometry,
+                    ),
+                ),
+            )
+            val estimate = success(
+                instance.estimateRenderAssetBytes(
+                    renderVariant = key.variantSnapshot ?: FontRenderVariantSnapshot.default,
+                    profile = key.representationProfile,
+                ),
+            )
+            if (total > Long.MAX_VALUE - estimate) Long.MAX_VALUE else total + estimate
+        }
         consumeConsumerLayout(layout)
-        return Observation(GlyphRepresentation.Empty, sourceBytes, 0L, 0L, 0L)
+        return Observation(
+            representation = GlyphRepresentation.Empty,
+            sourceBytes = sourceBytes,
+            maximumLiveAssets = assetKeys.size.toLong(),
+            estimatedAssetBytes = estimatedAssetBytes,
+            assetOpenings = assetKeys.size.toLong(),
+            operationReuses = glyphs.size.toLong(),
+        )
     }
 
     private fun consumeConsumerLayout(layout: org.graphiks.kalligraphie.api.ParagraphLayout) {
@@ -1018,7 +1057,24 @@ internal object GlyphMaterializationBenchmark {
             } else {
                 unavailable("profile does not signal cancellation")
             },
+            maximumLiveAssets = operationMeasurement(samples, Observation::maximumLiveAssets, "maximum simultaneously live operation-owned render assets per measured iteration"),
+            estimatedAssetBytes = operationMeasurement(samples, Observation::estimatedAssetBytes, "conservative bytes estimated for operation-owned render assets per measured iteration"),
+            assetOpenings = operationMeasurement(samples, Observation::assetOpenings, "distinct operation-owned render assets opened per measured iteration"),
+            operationReuses = operationMeasurement(samples, Observation::operationReuses, "final-glyph proofs reused from earlier materialization in the same operation per measured iteration"),
         )
+    }
+
+    private fun operationMeasurement(
+        samples: List<Sample>,
+        selector: (Observation) -> Long?,
+        detail: String,
+    ): GlyphMaterializationMeasurementValue {
+        val values = samples.mapNotNull { sample -> selector(sample.observation) }
+        return if (values.size == samples.size) {
+            measurement(values.averageAsLong(), detail)
+        } else {
+            unavailable("profile does not use operation-scoped paragraph materialization")
+        }
     }
 
     private fun timed(
@@ -1204,6 +1260,10 @@ internal object GlyphMaterializationBenchmark {
         val normalizedNodes: Long = 0L,
         val decodedPixels: Long = 0L,
         val cancellationSignaledAtNanos: Long? = null,
+        val maximumLiveAssets: Long? = null,
+        val estimatedAssetBytes: Long? = null,
+        val assetOpenings: Long? = null,
+        val operationReuses: Long? = null,
     ) {
         companion object {
             fun empty(cancellationSignaledAtNanos: Long): Observation = Observation(cancellationSignaledAtNanos = cancellationSignaledAtNanos)

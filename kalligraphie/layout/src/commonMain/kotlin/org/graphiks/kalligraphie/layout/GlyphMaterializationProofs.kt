@@ -20,8 +20,10 @@ internal class GlyphMaterializationProofs {
         instance: FontInstance,
         materialization: EditableLineMaterialization.Renderable,
         glyphIds: Collection<GlyphId>,
+        pool: OperationRenderAssetPool,
     ): GlyphMaterializationProof? = routesByAsset.entries.firstNotNullOfOrNull { (assetKey, routes) ->
         if (
+            pool.owns(assetKey) &&
             assetKey.fontInstanceKey == instance.key &&
             assetKey.generation == materialization.resolver.generation &&
             assetKey.variant == materialization.renderVariant.key &&

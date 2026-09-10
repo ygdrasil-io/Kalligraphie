@@ -567,6 +567,20 @@ public interface FontInstance {
         unsupportedOpenTypeDataOperation()
 
     /**
+     * Returns a conservative non-negative byte bound for one render asset before acquisition.
+     *
+     * The estimate covers the asset retained for this exact [renderVariant], instance, and
+     * [profile]. Implementations that cannot establish such a bound return a typed failure;
+     * callers must never use an unknown estimate to bypass a finite operation limit.
+     */
+    public fun estimateRenderAssetBytes(
+        renderVariant: FontRenderVariantSnapshot,
+        profile: GlyphRepresentationProfile,
+    ): FontOperationResult<Long> = unsupportedContractOperation(
+        "This font instance cannot conservatively estimate render-asset bytes.",
+    )
+
+    /**
      * Acquires a render asset for [variant] using [resolver] and [requirements].
      *
      * The resolver must belong to the catalog generation that contains this instance's face. A

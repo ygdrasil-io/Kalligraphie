@@ -18,6 +18,12 @@ public enum class EditorOperationLimitKind {
 
     /** Glyphs emitted by all native attempts and synthesized by final layout together. */
     TOTAL_GLYPHS,
+
+    /** Distinct render assets simultaneously owned by one materialization operation. */
+    MATERIALIZATION_ASSETS,
+
+    /** Conservative estimated bytes of all render assets owned by one operation. */
+    MATERIALIZATION_ASSET_BYTES,
 }
 
 /** Exact typed resource-limit observation that rejected one complete editor operation. */
@@ -32,6 +38,26 @@ public data class EditorOperationLimitExceeded(
     init {
         require(maximum >= 0L) { "Editor operation limit maximum must be non-negative." }
         require(observed > maximum) { "An exceeded editor operation limit must exceed its maximum." }
+    }
+}
+
+/**
+ * Immutable bounds for render assets owned by one complete materialization operation.
+ *
+ * A repeated complete asset key reuses the operation-owned handle and consumes neither another
+ * live-asset slot nor another byte estimate. Finite byte limits require the font provider to
+ * return a conservative estimate before acquisition; an unavailable estimate fails the complete
+ * operation instead of bypassing the limit.
+ */
+public data class MaterializationResourceProfile(
+    /** Maximum number of distinct render assets simultaneously owned by the operation. */
+    public val maxLiveAssets: Int = Int.MAX_VALUE,
+    /** Maximum sum of conservative estimates for all live render assets. */
+    public val maxEstimatedAssetBytes: Long = Long.MAX_VALUE,
+) {
+    init {
+        require(maxLiveAssets >= 0) { "Materialization live-asset limit must be non-negative." }
+        require(maxEstimatedAssetBytes >= 0L) { "Materialization asset-byte limit must be non-negative." }
     }
 }
 
@@ -63,6 +89,8 @@ public class EditorOperationProfile(
     public val maxTotalGlyphs: Long = Long.MAX_VALUE,
     /** Positive interval between cooperative observations in iterative work. */
     public val cancellationCheckInterval: Int = 256,
+    /** Bounds applied to all render assets retained until this operation completes. */
+    public val materializationResourceProfile: MaterializationResourceProfile = MaterializationResourceProfile(),
 ) {
     init {
         require(maxSourceUnits >= 0) { "Editor operation source-unit limit must be non-negative." }
