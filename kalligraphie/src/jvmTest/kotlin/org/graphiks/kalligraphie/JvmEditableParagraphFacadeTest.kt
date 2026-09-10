@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
@@ -402,8 +403,69 @@ class JvmEditableParagraphFacadeTest {
             ),
             result.layout.lines.map { line -> line.glyphAdvances() },
         )
+        val emojiRange = range(fixture.snapshot, 3, 8)
+        val emojiLine = result.layout.lines[1]
+        val anchor = emojiLine.allCaretCandidates.first { it.position.index == emojiRange.start }.position
+        val focus = emojiLine.allCaretCandidates.first { it.position.index == emojiRange.endExclusive }.position
+        assertTrue(result.layout.selectionGeometry(anchor, focus).isNotEmpty())
+        assertFalse(emojiLine.allCaretCandidates.any { candidate ->
+            candidate.position.index > emojiRange.start && candidate.position.index < emojiRange.endExclusive
+        })
         // Frozen Unicode 16 UAX #14 and HarfBuzz oracle over the checked-in real GDEF/DejaVu
         // fixtures; only public paragraph lines are observed here.
+    }
+
+    @Test
+    fun fallbackHandlesControlsVariationSelectorsSoftHyphenArabicAndDevanagari() {
+        val nestedIsolates = fontFixture(
+            value = "f\u2067f\u2066f\u2069f\u2069f",
+            fonts = listOf(FontFixture("gdef-kern/GdefKerningFixture.ttf", "GDEF kerning fixture")),
+        )
+        val nestedResult = layout(
+            nestedIsolates,
+            constraints(width = 1_000f, top = 50f, height = 1_200f),
+            language = "und",
+        )
+        assertEquals(5, nestedResult.layout.lines.single().positionedGlyphRuns.flatMap { run -> run.glyphs }.size)
+
+        val control = fontFixture(
+            value = "\u2067",
+            fonts = listOf(FontFixture("gdef-kern/GdefKerningFixture.ttf", "GDEF kerning fixture")),
+        )
+        val controlResult = layout(control, constraints(width = 1_000f, top = 50f, height = 1_200f), language = "und")
+        assertEquals(listOf(control.snapshot.range), controlResult.layout.lines.map(LineLayout::range))
+        assertTrue(controlResult.layout.lines.single().positionedGlyphRuns.flatMap { run -> run.glyphs }.isEmpty())
+
+        val fixture = fontFixture(
+            value = "\u0915\u094D\u200D\u0937 \u0915\u094D\u200C\u0937 \u2764\uFE0F co\u00ADoperate \u0644\u0627 \u0915\u094D\u0937\u093F",
+            fonts = listOf(
+                FontFixture("gdef-kern/GdefKerningFixture.ttf", "GDEF kerning fixture"),
+                FontFixture("dejavu/DejaVuSans.ttf", "DejaVu Sans"),
+                FontFixture("amiri/Amiri-Regular.ttf", "Amiri Regular"),
+                FontFixture("noto-devanagari/NotoSansDevanagari-Regular.ttf", "Noto Sans Devanagari Regular"),
+            ),
+        )
+        val result = layout(
+            fixture,
+            constraints(width = 20_000f, top = 50f, height = 1_200f),
+            language = "und",
+        )
+        val line = result.layout.lines.single()
+
+        assertTrue(line.positionedGlyphRuns.all { run -> run.glyphs.isNotEmpty() })
+        val softHyphenRange = range(fixture.snapshot, 15, 16)
+        assertEquals(0f, line.positionedGlyphRuns.flatMap { run -> run.glyphs }
+            .single { glyph -> glyph.mappedSourceRange == softHyphenRange }.advance.x.value)
+        listOf(
+            "Devanagari ZWJ" to range(fixture.snapshot, 0, 4),
+            "Devanagari ZWNJ" to range(fixture.snapshot, 5, 8),
+            "variation sequence" to range(fixture.snapshot, 10, 12),
+            "Devanagari conjunct" to range(fixture.snapshot, 27, 31),
+        ).forEach { (label, grapheme) ->
+            assertFalse(line.allCaretCandidates.any { candidate ->
+                candidate.position.index > grapheme.start && candidate.position.index < grapheme.endExclusive
+            }, "Unexpected caret inside $label.")
+        }
     }
 
     @Test

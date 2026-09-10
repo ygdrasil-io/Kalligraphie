@@ -136,16 +136,9 @@ public class FontResolutionPolicySnapshot(
     }
 }
 
-/**
- * Atomic source range assigned to exactly one font during fallback.
- *
- * A unit is derived from Unicode analysis and therefore includes a complete extended grapheme
- * cluster, variation sequence, and emoji ZWJ sequence. [range] is snapshot-bound and is never
- * split between two candidates. Script, language, and BiDi level preserve the shaping context
- * that selected the unit; they do not expose platform state.
- */
-public data class FallbackUnit(
-    /** Complete snapshot-bound source range of the indivisible unit. */
+/** One script, language, and BiDi itemization fragment inside an atomic fallback unit. */
+public data class FallbackShapingFragment(
+    /** Non-empty snapshot-bound source range covered by this fragment. */
     public val range: TextRange,
     /** ISO 15924 script passed to shaping. */
     public val script: OpenTypeScript,
@@ -155,8 +148,38 @@ public data class FallbackUnit(
     public val bidiLevel: Int,
 ) {
     init {
-        require(language.isNotBlank()) { "Fallback unit language must not be blank." }
-        require(bidiLevel in 0..126) { "Fallback unit BiDi level must be between 0 and 126." }
+        require(range.start < range.endExclusive) { "Fallback shaping fragment range must not be empty." }
+        require(language.isNotBlank()) { "Fallback shaping fragment language must not be blank." }
+        require(bidiLevel in 0..126) { "Fallback shaping fragment BiDi level must be between 0 and 126." }
+    }
+}
+
+/**
+ * Atomic source range assigned to exactly one font during fallback.
+ *
+ * A unit is derived from Unicode analysis and therefore includes a complete extended grapheme
+ * cluster, variation sequence, and emoji ZWJ sequence. [range] is snapshot-bound and is never
+ * split between two candidates. [fragments] preserves every script, language, and BiDi boundary
+ * inside the unit as an ordered adjacent partition of that complete range.
+ */
+public data class FallbackUnit(
+    /** Complete non-empty snapshot-bound source range of the indivisible unit. */
+    public val range: TextRange,
+    /** Complete ordered shaping-item partition of [range]. */
+    public val fragments: List<FallbackShapingFragment>,
+) {
+    init {
+        require(range.start < range.endExclusive) { "Fallback unit range must not be empty." }
+        require(fragments.isNotEmpty()) { "Fallback unit must contain at least one shaping fragment." }
+        require(fragments.first().range.start == range.start) {
+            "Fallback unit fragments must start at the unit range start."
+        }
+        require(fragments.last().range.endExclusive == range.endExclusive) {
+            "Fallback unit fragments must end at the unit range end."
+        }
+        require(fragments.zipWithNext().all { (left, right) -> left.range.endExclusive == right.range.start }) {
+            "Fallback unit fragments must be ordered and adjacent."
+        }
     }
 }
 

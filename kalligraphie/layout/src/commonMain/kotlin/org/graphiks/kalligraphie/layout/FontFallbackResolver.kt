@@ -7,6 +7,7 @@ import org.graphiks.kalligraphie.api.EditableLineMaterialization
 import org.graphiks.kalligraphie.api.EditorOperationContext
 import org.graphiks.kalligraphie.api.EditorOperationLimitExceeded
 import org.graphiks.kalligraphie.api.FallbackUnit
+import org.graphiks.kalligraphie.api.FallbackShapingFragment
 import org.graphiks.kalligraphie.api.FontAccessRequirementsSnapshot
 import org.graphiks.kalligraphie.api.FontCatalogSnapshot
 import org.graphiks.kalligraphie.api.FontDiagnostic
@@ -143,7 +144,7 @@ internal object FontFallbackResolver {
 
         val requirements = requirementsFor(request.materialization)
         val records = request.fontCatalog.faces.associateBy(FontFaceRecord::id)
-        val blacklist = mutableSetOf<RejectedCandidate>()
+        val rejectedAttempts = mutableSetOf<RejectedAttempt>()
         val instances = mutableMapOf<FontFaceId, FontInstance>()
         val shapedGroups = mutableMapOf<GroupSignature, List<ShapedGlyphRun>>()
         val diagnostics = mutableListOf<FontDiagnostic>()
@@ -160,7 +161,7 @@ internal object FontFallbackResolver {
                     requirements,
                     request,
                     instances,
-                    blacklist,
+                    rejectedAttempts,
                     diagnostics,
                 )
             ) {
@@ -224,7 +225,9 @@ internal object FontFallbackResolver {
             }
 
             rejectedGroup.forEach { assigned ->
-                blacklist += RejectedCandidate(assigned.unit.range, assigned.record.id, requirements)
+                requirements.fallbackAccesses().forEach { access ->
+                    rejectedAttempts += RejectedAttempt(assigned.unit.range, assigned.record.id, access)
+                }
                 diagnostics += rejectedCandidateDiagnostic(
                     assigned.record.id,
                     "Shaping or final glyph materialization rejected the complete fallback unit.",
@@ -244,7 +247,7 @@ internal object FontFallbackResolver {
                             requirements,
                             request,
                             instances,
-                            blacklist,
+                            rejectedAttempts,
                             diagnostics,
                         )
                     ) {
@@ -267,7 +270,7 @@ internal object FontFallbackResolver {
         requirements: FontAccessRequirementsSnapshot,
         request: ResolutionRequest,
         instances: MutableMap<FontFaceId, FontInstance>,
-        blacklist: MutableSet<RejectedCandidate>,
+        rejectedAttempts: MutableSet<RejectedAttempt>,
         diagnostics: MutableList<FontDiagnostic>,
     ): CandidateSelection {
         policy.candidates.forEach { candidate ->
@@ -275,13 +278,15 @@ internal object FontFallbackResolver {
                 return CandidateSelection.Cancelled(emptyList())
             }
             val record = records.getValue(candidate.faceId)
-            val rejected = RejectedCandidate(unit.range, record.id, requirements)
-            if (rejected in blacklist || !supports(record.capabilities, requirements)) return@forEach
+            val accesses = requirements.fallbackAccesses()
+            if (!accesses.any { access -> unit.isCompatibleWith(record.id, access, rejectedAttempts) } ||
+                !supports(record.capabilities, requirements)
+            ) return@forEach
             val instance = instances[record.id] ?: run {
                 val face = when (val resolved = catalog.resolveFace(record.id, requirements)) {
                     is FontOperationResult.Success -> resolved.value
                     is FontOperationResult.Failure -> {
-                        blacklist += rejected
+                        accesses.forEach { access -> rejectedAttempts += RejectedAttempt(unit.range, record.id, access) }
                         diagnostics += resolved.diagnostics + resolved.error.toDiagnostic()
                         diagnostics += rejectedCandidateDiagnostic(record.id, "Face resolution did not meet the required capabilities.")
                         if (record.id == policy.lastResortFace) diagnostics += rejectedLastResortDiagnostic(record.id)
@@ -293,7 +298,7 @@ internal object FontFallbackResolver {
                 when (val instantiated = face.instantiate(request.fontInstanceDescriptor)) {
                     is FontOperationResult.Success -> instantiated.value.also { instances[record.id] = it }
                     is FontOperationResult.Failure -> {
-                        blacklist += rejected
+                        accesses.forEach { access -> rejectedAttempts += RejectedAttempt(unit.range, record.id, access) }
                         diagnostics += instantiated.diagnostics + instantiated.error.toDiagnostic()
                         diagnostics += rejectedCandidateDiagnostic(record.id, "Face instantiation failed for the requested instance descriptor.")
                         if (record.id == policy.lastResortFace) diagnostics += rejectedLastResortDiagnostic(record.id)
@@ -311,7 +316,7 @@ internal object FontFallbackResolver {
                 is ScalarMapping.Cancelled -> return CandidateSelection.Cancelled(mapping.diagnostics)
                 is ScalarMapping.Unsupported -> diagnostics += mapping.diagnostics
             }
-            blacklist += rejected
+            accesses.forEach { access -> rejectedAttempts += RejectedAttempt(unit.range, record.id, access) }
             diagnostics += rejectedCandidateDiagnostic(record.id, "The complete fallback unit is not covered by the candidate character mapping.")
             if (record.id == policy.lastResortFace) diagnostics += rejectedLastResortDiagnostic(record.id)
         }
@@ -396,7 +401,7 @@ internal object FontFallbackResolver {
             }
             is FontOperationResult.Cancelled -> return Attempt.Cancelled(result.diagnostics)
         }
-            if (fragmentRun.glyphs.any { it.glyphId.value == 0 }) {
+            if (fragmentRun.glyphs.any { glyph -> glyph.glyphId.value == 0 && glyph.mapsVisibleScalar(fragmentRun, request.snapshot) }) {
                 return Attempt.Rejected(listOf(rejectionDiagnostic("Shaping produced the missing-glyph identifier for a complete fallback unit.")))
             }
             val materialization = request.materialization
@@ -452,16 +457,21 @@ internal object FontFallbackResolver {
         group: List<AssignedUnit>,
         request: ResolutionRequest,
     ): List<ShapingFragment> {
-        val first = group.first()
-        val last = group.last()
-        val groupRange = TextRange(first.unit.range.start, last.unit.range.endExclusive)
-        return scriptFragments(groupRange, request.unicodeAnalysis.scriptLanguageRuns).flatMap { script ->
-            request.unicodeAnalysis.logicalBidiRuns.mapNotNull { bidi ->
-                intersection(script.range, bidi.range)?.let { range ->
-                    ShapingFragment(range, script.script, script.language, bidi.level)
+        return group.flatMap { assigned -> assigned.unit.fragments }
+            .fold(mutableListOf<ShapingFragment>()) { fragments, fragment ->
+                val previous = fragments.lastOrNull()
+                if (
+                    previous != null && previous.hasSameClassification(fragment) &&
+                    previous.range.endExclusive == fragment.range.start
+                ) {
+                    fragments[fragments.lastIndex] = previous.copy(
+                        range = TextRange(previous.range.start, fragment.range.endExclusive),
+                    )
+                } else {
+                    fragments += ShapingFragment(fragment.range, fragment.script.value, fragment.language, fragment.bidiLevel)
                 }
+                fragments
             }
-        }
     }
 
     private fun scriptFragments(
@@ -610,13 +620,25 @@ internal object FontFallbackResolver {
         val graphemeUnits = request.unicodeAnalysis.graphemeClusters.filter { cluster ->
             cluster.start >= request.sourceRange.start && cluster.endExclusive <= request.sourceRange.endExclusive
         }.map { cluster ->
-            val script = request.unicodeAnalysis.scriptLanguageRuns.firstOrNull { contains(it.range, cluster) }
-                ?: request.unicodeAnalysis.scriptLanguageRuns.first { overlaps(it.range, cluster) }
-            val bidi = request.unicodeAnalysis.logicalBidiRuns.firstOrNull { contains(it.range, cluster) }
-                ?: request.unicodeAnalysis.logicalBidiRuns.first { overlaps(it.range, cluster) }
-            FallbackUnit(cluster, org.graphiks.kalligraphie.api.OpenTypeScript(script.script), script.language, bidi.level)
+            FallbackUnit(cluster, fallbackShapingFragments(cluster, request.unicodeAnalysis))
         }
         return graphemeUnits
+    }
+
+    private fun fallbackShapingFragments(
+        range: TextRange,
+        analysis: UnicodeAnalysis,
+    ): List<FallbackShapingFragment> = scriptFragments(range, analysis.scriptLanguageRuns).flatMap { script ->
+        analysis.logicalBidiRuns.mapNotNull { bidi ->
+            intersection(script.range, bidi.range)?.let { fragmentRange ->
+                FallbackShapingFragment(
+                    fragmentRange,
+                    OpenTypeScript(script.script),
+                    script.language,
+                    bidi.level,
+                )
+            }
+        }
     }
 
     private fun contiguousGroups(assignments: List<AssignedUnit>): List<List<AssignedUnit>> {
@@ -626,9 +648,7 @@ internal object FontFallbackResolver {
             if (
                 previous != null &&
                 previous.record.id == assigned.record.id &&
-                previous.unit.script == assigned.unit.script &&
-                previous.unit.language == assigned.unit.language &&
-                previous.unit.bidiLevel == assigned.unit.bidiLevel &&
+                previous.unit.hasSameFragmentClassifications(assigned.unit) &&
                 previous.glyphless == assigned.glyphless &&
                 previous.unit.range.endExclusive == assigned.unit.range.start
             ) {
@@ -657,6 +677,27 @@ internal object FontFallbackResolver {
         is EditableLineMaterialization.Renderable -> materialization.requirements
     }
 
+    private fun FontAccessRequirementsSnapshot.fallbackAccesses(): List<FallbackAccess> = when (mode) {
+        FontAccessRequirementsSnapshot.Mode.LAYOUT_ONLY -> listOf(FallbackAccess.LayoutOnly)
+        FontAccessRequirementsSnapshot.Mode.RENDERABLE -> acceptedProfiles.map(FallbackAccess::Renderable)
+    }
+
+    private fun FallbackUnit.isCompatibleWith(
+        candidate: FontFaceId,
+        access: FallbackAccess,
+        rejectedAttempts: Set<RejectedAttempt>,
+    ): Boolean = rejectedAttempts.none { attempt ->
+        attempt.unitRange == range && attempt.faceId == candidate && attempt.access == access
+    }
+
+    private fun FallbackUnit.hasSameFragmentClassifications(other: FallbackUnit): Boolean =
+        fragments.size == other.fragments.size && fragments.zip(other.fragments).all { (left, right) ->
+            left.script == right.script && left.language == right.language && left.bidiLevel == right.bidiLevel
+        }
+
+    private fun ShapingFragment.hasSameClassification(other: FallbackShapingFragment): Boolean =
+        script == other.script.value && language == other.language && bidiLevel == other.bidiLevel
+
     private fun FontInstance.acquireMaterializationAsset(
         materialization: EditableLineMaterialization.Renderable,
     ): FontOperationResult<org.graphiks.kalligraphie.api.FontRenderAssetHandle> =
@@ -684,12 +725,6 @@ internal object FontFallbackResolver {
         )
         return FontOperationResult.Failure(error, diagnostics + error.toDiagnostic())
     }
-
-    private fun contains(owner: TextRange, item: TextRange): Boolean =
-        item.start >= owner.start && item.endExclusive <= owner.endExclusive
-
-    private fun overlaps(left: TextRange, right: TextRange): Boolean =
-        left.start < right.endExclusive && right.start < left.endExclusive
 
     private fun intersection(left: TextRange, right: TextRange): TextRange? {
         val start = if (left.start.compareTo(right.start) >= 0) left.start else right.start
@@ -738,11 +773,16 @@ internal object FontFallbackResolver {
         val language: String,
     )
 
-    private data class RejectedCandidate(
-        val range: TextRange,
+    private data class RejectedAttempt(
+        val unitRange: TextRange,
         val faceId: FontFaceId,
-        val requirements: FontAccessRequirementsSnapshot,
+        val access: FallbackAccess,
     )
+
+    private sealed interface FallbackAccess {
+        data object LayoutOnly : FallbackAccess
+        data class Renderable(val profile: GlyphRepresentationProfile) : FallbackAccess
+    }
 
     private data class GroupSignature(
         val assignments: List<GroupAssignment>,
@@ -826,13 +866,33 @@ internal object FontFallbackResolver {
     }
 
     private val IGNORED_MAPPING_SCALARS: Set<Int> = buildSet {
-        add(0x200D)
+        add(SOFT_HYPHEN)
+        add(ZERO_WIDTH_NON_JOINER)
+        add(ZERO_WIDTH_JOINER)
+        add(ARABIC_LETTER_MARK)
+        addAll(LEFT_TO_RIGHT_MARK..RIGHT_TO_LEFT_MARK)
+        addAll(LEFT_TO_RIGHT_EMBEDDING..RIGHT_TO_LEFT_OVERRIDE)
+        addAll(LEFT_TO_RIGHT_ISOLATE..POP_DIRECTIONAL_ISOLATE)
     }
 
     private fun Int.isVariationSelector(): Boolean = this in 0xFE00..0xFE0F || this in 0xE0100..0xE01EF
 
+    private fun Int.isVisibleForFallback(): Boolean = this !in IGNORED_MAPPING_SCALARS && !isVariationSelector()
+
+    private fun org.graphiks.kalligraphie.api.ShapedGlyph.mapsVisibleScalar(
+        run: ShapedGlyphRun,
+        snapshot: TextSnapshot,
+    ): Boolean = clusterTokens.any { token ->
+        run.clusters.single { cluster -> cluster.token == token }.scalarRanges.any { scalarRange ->
+            snapshot.scalarValues(scalarRange).any { scalar -> scalar.isVisibleForFallback() }
+        }
+    }
+
     private fun FallbackUnit.isGlyphless(snapshot: TextSnapshot): Boolean =
-        snapshot.scalarValues(range).all { scalar -> scalar in MANDATORY_LINE_CONTROLS || scalar == TAB_SCALAR || scalar == OBJECT_REPLACEMENT }
+        snapshot.scalarValues(range).all { scalar ->
+            scalar in MANDATORY_LINE_CONTROLS || scalar in BIDI_CONTROLS || scalar in JOIN_CONTROLS ||
+                scalar == TAB_SCALAR || scalar == OBJECT_REPLACEMENT
+        }
 
     private fun String.isExplicitScript(): Boolean = this != COMMON_SCRIPT && this != INHERITED_SCRIPT
 
@@ -840,8 +900,25 @@ internal object FontFallbackResolver {
     private const val INHERITED_SCRIPT: String = "Zinh"
 
     private val MANDATORY_LINE_CONTROLS: Set<Int> = setOf(0x000A, 0x000B, 0x000C, 0x000D, 0x0085, 0x2028, 0x2029)
+    private val BIDI_CONTROLS: Set<Int> = buildSet {
+        add(ARABIC_LETTER_MARK)
+        addAll(LEFT_TO_RIGHT_MARK..RIGHT_TO_LEFT_MARK)
+        addAll(LEFT_TO_RIGHT_EMBEDDING..RIGHT_TO_LEFT_OVERRIDE)
+        addAll(LEFT_TO_RIGHT_ISOLATE..POP_DIRECTIONAL_ISOLATE)
+    }
+    private val JOIN_CONTROLS: Set<Int> = setOf(ZERO_WIDTH_NON_JOINER, ZERO_WIDTH_JOINER)
 
     private const val TAB_SCALAR: Int = 0x0009
+    private const val SOFT_HYPHEN: Int = 0x00AD
+    private const val ARABIC_LETTER_MARK: Int = 0x061C
+    private const val ZERO_WIDTH_NON_JOINER: Int = 0x200C
+    private const val ZERO_WIDTH_JOINER: Int = 0x200D
+    private const val LEFT_TO_RIGHT_MARK: Int = 0x200E
+    private const val RIGHT_TO_LEFT_MARK: Int = 0x200F
+    private const val LEFT_TO_RIGHT_EMBEDDING: Int = 0x202A
+    private const val RIGHT_TO_LEFT_OVERRIDE: Int = 0x202E
+    private const val LEFT_TO_RIGHT_ISOLATE: Int = 0x2066
+    private const val POP_DIRECTIONAL_ISOLATE: Int = 0x2069
     private const val OBJECT_REPLACEMENT: Int = 0xFFFC
     private const val VERTICAL_ALTERNATES: String = "vert"
     private const val VERTICAL_ROTATION: String = "vrt2"

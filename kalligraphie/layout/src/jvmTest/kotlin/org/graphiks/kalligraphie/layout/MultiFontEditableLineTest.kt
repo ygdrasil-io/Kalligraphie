@@ -396,6 +396,35 @@ class MultiFontEditableLineTest {
     }
 
     @Test
+    fun resolverPublishesTheAtomicEmojiZwjUnitWithItsCompleteFragments() {
+        val selective = source("/fonts/gdef-kern/GdefKerningFixture.ttf", "GDEF kerning fixture")
+        val complete = source("/fonts/dejavu/DejaVuSans.ttf", "DejaVu Sans")
+        val catalog = catalogOf(selective, complete)
+        val selectiveFace = FontFaceId(selective.id, 0)
+        val completeFace = FontFaceId(complete.id, 0)
+        val policy = FontResolutionPolicySnapshot(
+            generation = catalog.generation,
+            policyId = "atomic-emoji-zwj-fragments",
+            version = "1",
+            candidates = listOf(FontResolutionCandidate(selectiveFace), FontResolutionCandidate(completeFace)),
+            lastResortFace = completeFace,
+        )
+        val source = text("\u2764\uFE0F\u200D\u2764\uFE0F")
+        val analysis = analyze(source, "und")
+
+        val resolution = FontFallbackResolver.resolve(
+            request(source, analysis, catalog, policy, backend(), EditableLineMaterialization.LayoutOnly),
+        ).successValue()
+
+        val unit = resolution.units.single()
+        assertEquals(source.range, unit.range)
+        assertTrue(unit.fragments.isNotEmpty())
+        assertEquals(unit.range.start, unit.fragments.first().range.start)
+        assertEquals(unit.range.endExclusive, unit.fragments.last().range.endExclusive)
+        assertTrue(unit.fragments.zipWithNext().all { (left, right) -> left.range.endExclusive == right.range.start })
+    }
+
+    @Test
     fun variationSequenceFallsBackOnlyToFaceWithAnExplicitUvsMapping() {
         val baseOnly = source("/fonts/dejavu/DejaVuSans.ttf", "DejaVu Sans")
         val uvs = source("/fonts/gdef-kern/GdefKerningFixture.ttf", "GDEF kerning fixture")
