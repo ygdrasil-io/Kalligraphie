@@ -8,6 +8,8 @@ import org.graphiks.kalligraphie.api.EditorOperationLimitKind
 import org.graphiks.kalligraphie.api.EditorOperationProfile
 import org.graphiks.kalligraphie.api.EditableLineResult
 import org.graphiks.kalligraphie.api.EditableLineError
+import org.graphiks.kalligraphie.api.FallbackShapingFragment
+import org.graphiks.kalligraphie.api.FallbackUnit
 import org.graphiks.kalligraphie.api.FontAccessRequirementsSnapshot
 import org.graphiks.kalligraphie.api.FontCatalogSnapshot
 import org.graphiks.kalligraphie.api.FontFaceId
@@ -23,6 +25,7 @@ import org.graphiks.kalligraphie.api.FontSourceProvenance
 import org.graphiks.kalligraphie.api.LayoutUnit
 import org.graphiks.kalligraphie.api.LineVerticalMetrics
 import org.graphiks.kalligraphie.api.MultiFontEditableLineRequest
+import org.graphiks.kalligraphie.api.OpenTypeScript
 import org.graphiks.kalligraphie.api.OutlineProfile
 import org.graphiks.kalligraphie.api.ShapingBackend
 import org.graphiks.kalligraphie.api.ShapedGlyphRun
@@ -30,12 +33,14 @@ import org.graphiks.kalligraphie.api.ShapingRequest
 import org.graphiks.kalligraphie.api.GlyphId
 import org.graphiks.kalligraphie.api.GlyphRepresentation
 import org.graphiks.kalligraphie.api.TextVersion
+import org.graphiks.kalligraphie.api.TextRange
 import org.graphiks.kalligraphie.shaping.JvmHarfBuzzShapingBackend
 import org.graphiks.kalligraphie.unicode.JvmUnicodeAnalyzer
 import org.graphiks.kalligraphie.unicode.TextSnapshots
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -417,11 +422,57 @@ class MultiFontEditableLineTest {
         ).successValue()
 
         val unit = resolution.units.single()
+        val expectedFragments = listOf(
+            FallbackShapingFragment(range(source, 0, 1), OpenTypeScript("Zyyy"), "und", 0),
+            FallbackShapingFragment(range(source, 1, 3), OpenTypeScript("Zinh"), "und", 0),
+            FallbackShapingFragment(range(source, 3, 4), OpenTypeScript("Zyyy"), "und", 0),
+            FallbackShapingFragment(range(source, 4, 5), OpenTypeScript("Zinh"), "und", 0),
+        )
         assertEquals(source.range, unit.range)
-        assertTrue(unit.fragments.isNotEmpty())
-        assertEquals(unit.range.start, unit.fragments.first().range.start)
-        assertEquals(unit.range.endExclusive, unit.fragments.last().range.endExclusive)
-        assertTrue(unit.fragments.zipWithNext().all { (left, right) -> left.range.endExclusive == right.range.start })
+        assertEquals(expectedFragments, unit.fragments)
+
+        val suppliedFragments = unit.fragments.toMutableList()
+        val detachedUnit = FallbackUnit(unit.range, suppliedFragments)
+
+        suppliedFragments.clear()
+
+        assertEquals(expectedFragments, detachedUnit.fragments)
+        assertFailsWith<UnsupportedOperationException> {
+            (detachedUnit.fragments as MutableList<FallbackShapingFragment>).clear()
+        }
+    }
+
+    @Test
+    fun initialArabicZwjReachesRealShapingWithoutIndependentCmapCoverage() {
+        val arabic = source("/fonts/amiri/Amiri-Regular.ttf", "Amiri Regular")
+        val catalog = catalogOf(arabic)
+        val arabicFace = FontFaceId(arabic.id, 0)
+        val policy = FontResolutionPolicySnapshot(
+            generation = catalog.generation,
+            policyId = "initial-arabic-zwj-shaping",
+            version = "1",
+            candidates = listOf(FontResolutionCandidate(arabicFace)),
+            lastResortFace = arabicFace,
+        )
+        val source = text("\u200D\u0628")
+        val analysis = analyze(source, "ar", BaseDirection.RIGHT_TO_LEFT)
+
+        val resolution = FontFallbackResolver.resolve(
+            request(
+                source,
+                analysis,
+                catalog,
+                policy,
+                backend(),
+                EditableLineMaterialization.LayoutOnly,
+                BaseDirection.RIGHT_TO_LEFT,
+            ),
+        ).successValue()
+
+        val shapedRun = resolution.shapedRuns.single()
+        assertEquals(source.range, shapedRun.range)
+        assertEquals(listOf(1589, 1), shapedRun.glyphs.map { glyph -> glyph.glyphId.value })
+        assertEquals(listOf(883f, 0f), shapedRun.glyphs.map { glyph -> glyph.xAdvance.value })
     }
 
     @Test
@@ -628,6 +679,12 @@ class MultiFontEditableLineTest {
         version = TextVersion.create(),
         slices = listOf(org.graphiks.kalligraphie.api.TextSlice.Utf16(value.toCharArray())),
     ).snapshot
+
+    private fun range(
+        snapshot: org.graphiks.kalligraphie.api.TextSnapshot,
+        start: Int,
+        endExclusive: Int,
+    ): TextRange = TextRange(snapshot.textIndexAtScalarBoundary(start), snapshot.textIndexAtScalarBoundary(endExclusive))
 
     private fun analyze(
         text: org.graphiks.kalligraphie.api.TextSnapshot,

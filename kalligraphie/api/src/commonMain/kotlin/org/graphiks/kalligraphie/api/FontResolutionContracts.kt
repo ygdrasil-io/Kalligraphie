@@ -162,22 +162,24 @@ public data class FallbackShapingFragment(
  * split between two candidates. [fragments] preserves every script, language, and BiDi boundary
  * inside the unit as an ordered adjacent partition of that complete range.
  */
-public data class FallbackUnit(
+public class FallbackUnit(
     /** Complete non-empty snapshot-bound source range of the indivisible unit. */
     public val range: TextRange,
-    /** Complete ordered shaping-item partition of [range]. */
-    public val fragments: List<FallbackShapingFragment>,
+    fragments: List<FallbackShapingFragment>,
 ) {
+    /** Immutable snapshot of the complete ordered shaping-item partition of [range]. */
+    public val fragments: List<FallbackShapingFragment> = fragments.immutableListSnapshot()
+
     init {
         require(range.start < range.endExclusive) { "Fallback unit range must not be empty." }
-        require(fragments.isNotEmpty()) { "Fallback unit must contain at least one shaping fragment." }
-        require(fragments.first().range.start == range.start) {
+        require(this.fragments.isNotEmpty()) { "Fallback unit must contain at least one shaping fragment." }
+        require(this.fragments.first().range.start == range.start) {
             "Fallback unit fragments must start at the unit range start."
         }
-        require(fragments.last().range.endExclusive == range.endExclusive) {
+        require(this.fragments.last().range.endExclusive == range.endExclusive) {
             "Fallback unit fragments must end at the unit range end."
         }
-        require(fragments.zipWithNext().all { (left, right) -> left.range.endExclusive == right.range.start }) {
+        require(this.fragments.zipWithNext().all { (left, right) -> left.range.endExclusive == right.range.start }) {
             "Fallback unit fragments must be ordered and adjacent."
         }
     }

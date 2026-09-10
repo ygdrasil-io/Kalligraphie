@@ -457,21 +457,16 @@ internal object FontFallbackResolver {
         group: List<AssignedUnit>,
         request: ResolutionRequest,
     ): List<ShapingFragment> {
-        return group.flatMap { assigned -> assigned.unit.fragments }
-            .fold(mutableListOf<ShapingFragment>()) { fragments, fragment ->
-                val previous = fragments.lastOrNull()
-                if (
-                    previous != null && previous.hasSameClassification(fragment) &&
-                    previous.range.endExclusive == fragment.range.start
-                ) {
-                    fragments[fragments.lastIndex] = previous.copy(
-                        range = TextRange(previous.range.start, fragment.range.endExclusive),
-                    )
-                } else {
-                    fragments += ShapingFragment(fragment.range, fragment.script.value, fragment.language, fragment.bidiLevel)
+        val first = group.first()
+        val last = group.last()
+        val groupRange = TextRange(first.unit.range.start, last.unit.range.endExclusive)
+        return scriptFragments(groupRange, request.unicodeAnalysis.scriptLanguageRuns).flatMap { script ->
+            request.unicodeAnalysis.logicalBidiRuns.mapNotNull { bidi ->
+                intersection(script.range, bidi.range)?.let { range ->
+                    ShapingFragment(range, script.script, script.language, bidi.level)
                 }
-                fragments
             }
+        }
     }
 
     private fun scriptFragments(
@@ -628,7 +623,9 @@ internal object FontFallbackResolver {
     private fun fallbackShapingFragments(
         range: TextRange,
         analysis: UnicodeAnalysis,
-    ): List<FallbackShapingFragment> = scriptFragments(range, analysis.scriptLanguageRuns).flatMap { script ->
+    ): List<FallbackShapingFragment> = analysis.scriptLanguageRuns.mapNotNull { script ->
+        intersection(range, script.range)?.let { scriptRange -> ScriptFragment(scriptRange, script.script, script.language) }
+    }.flatMap { script ->
         analysis.logicalBidiRuns.mapNotNull { bidi ->
             intersection(script.range, bidi.range)?.let { fragmentRange ->
                 FallbackShapingFragment(
@@ -694,9 +691,6 @@ internal object FontFallbackResolver {
         fragments.size == other.fragments.size && fragments.zip(other.fragments).all { (left, right) ->
             left.script == right.script && left.language == right.language && left.bidiLevel == right.bidiLevel
         }
-
-    private fun ShapingFragment.hasSameClassification(other: FallbackShapingFragment): Boolean =
-        script == other.script.value && language == other.language && bidiLevel == other.bidiLevel
 
     private fun FontInstance.acquireMaterializationAsset(
         materialization: EditableLineMaterialization.Renderable,
@@ -890,8 +884,8 @@ internal object FontFallbackResolver {
 
     private fun FallbackUnit.isGlyphless(snapshot: TextSnapshot): Boolean =
         snapshot.scalarValues(range).all { scalar ->
-            scalar in MANDATORY_LINE_CONTROLS || scalar in BIDI_CONTROLS || scalar in JOIN_CONTROLS ||
-                scalar == TAB_SCALAR || scalar == OBJECT_REPLACEMENT
+            scalar in MANDATORY_LINE_CONTROLS || scalar in BIDI_CONTROLS || scalar == TAB_SCALAR ||
+                scalar == OBJECT_REPLACEMENT
         }
 
     private fun String.isExplicitScript(): Boolean = this != COMMON_SCRIPT && this != INHERITED_SCRIPT
@@ -906,8 +900,6 @@ internal object FontFallbackResolver {
         addAll(LEFT_TO_RIGHT_EMBEDDING..RIGHT_TO_LEFT_OVERRIDE)
         addAll(LEFT_TO_RIGHT_ISOLATE..POP_DIRECTIONAL_ISOLATE)
     }
-    private val JOIN_CONTROLS: Set<Int> = setOf(ZERO_WIDTH_NON_JOINER, ZERO_WIDTH_JOINER)
-
     private const val TAB_SCALAR: Int = 0x0009
     private const val SOFT_HYPHEN: Int = 0x00AD
     private const val ARABIC_LETTER_MARK: Int = 0x061C
