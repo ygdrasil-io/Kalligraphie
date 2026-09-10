@@ -299,9 +299,15 @@ class IncrementalLayoutEditorJourneyTest {
             )
             assertEquals(
                 List(7) { "font.fallback-last-resort" },
-                edited.layout.lines.single().diagnostics.map { it.code },
+                edited.layout.lines.single().diagnostics.filter { it.fallbackDiagnostic == null }.map { it.code },
             )
-            assertTrue(edited.layout.lines.single().diagnostics.all { it.sourceRange == null && it.glyphId == null })
+            assertTrue(edited.layout.lines.single().diagnostics.filter { it.fallbackDiagnostic == null }
+                .all { it.sourceRange == null && it.glyphId == null })
+            val fallbackDiagnostics = edited.layout.lines.single().diagnostics.mapNotNull { it.fallbackDiagnostic }
+            assertEquals((4 until 11).map { target.snapshot.incrementalRange(it, it + 1) }, fallbackDiagnostics.map { it.range })
+            assertTrue(fallbackDiagnostics.all { it.textVersion == target.snapshot.version &&
+                it.reason == org.graphiks.kalligraphie.api.FontFallbackReason.LastResortSelected &&
+                it.lastResortState == org.graphiks.kalligraphie.api.FontFallbackLastResortState.Selected })
             assertEquals(
                 listOf(1, 1, 2, 1, 2),
                 edited.layout.lines.single().positionedGlyphRuns.map { it.sourceRun.bidiLevel },

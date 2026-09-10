@@ -31,6 +31,8 @@ public class TextIndex internal constructor(
     /** Returns whether this index is compatible with the supplied snapshot version. */
     internal fun belongsTo(candidate: TextSnapshot): Boolean = version == candidate.version
 
+    internal fun belongsTo(candidate: TextVersion): Boolean = version == candidate
+
     /**
      * Compares two opaque boundaries in logical scalar order.
      *

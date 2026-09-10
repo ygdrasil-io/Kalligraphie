@@ -202,6 +202,7 @@ public class FontFallbackResolution(
     instances: List<FontInstance>,
     /** Canonically ordered recoverable diagnostics, including last-resort selection. */
     diagnostics: List<FontDiagnostic> = emptyList(),
+    fallbackDiagnostics: List<FontFallbackDiagnostic> = emptyList(),
 ) {
     /** Atomic units in logical source order. */
     public val units: List<FallbackUnit> = units.immutableListSnapshot()
@@ -211,4 +212,6 @@ public class FontFallbackResolution(
     public val instances: List<FontInstance> = instances.immutableListSnapshot()
     /** Canonically ordered recoverable diagnostics. */
     public val diagnostics: List<FontDiagnostic> = diagnostics.sortedDiagnostics()
+    /** Immutable source-local decisions in canonical order, including last-resort selection. */
+    public val fallbackDiagnostics: List<FontFallbackDiagnostic> = fallbackDiagnostics.canonicalFallbackDiagnostics()
 }

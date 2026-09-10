@@ -1164,6 +1164,37 @@ private data class DiagnosticSignature(
     val message: String,
     val sourceRange: RelativeRange?,
     val glyphId: GlyphId?,
+    val fallbackDiagnostic: FallbackDiagnosticSignature?,
+)
+
+private data class FallbackFragmentSignature(
+    val range: RelativeRange,
+    val script: OpenTypeScript,
+    val language: String,
+    val bidiLevel: Int,
+)
+
+private data class FallbackDiagnosticSignature(
+    val range: RelativeRange,
+    val unitRange: RelativeRange,
+    val fragments: List<FallbackFragmentSignature>,
+    val contributingFragments: List<FallbackFragmentSignature>,
+    val faceId: FontFaceId,
+    val representationProfile: GlyphRepresentationProfile?,
+    val candidateRank: Int,
+    val profileRank: Int?,
+    val stage: FontFallbackStage,
+    val reason: FontFallbackReason,
+    val lastResortState: FontFallbackLastResortState,
+)
+
+private fun FallbackShapingFragment.toSignature(base: Int): FallbackFragmentSignature =
+    FallbackFragmentSignature(range.relativeTo(base), script, language, bidiLevel)
+
+private fun FontFallbackDiagnostic.toSignature(base: Int): FallbackDiagnosticSignature = FallbackDiagnosticSignature(
+    range.relativeTo(base), unit.range.relativeTo(base), unit.fragments.map { it.toSignature(base) },
+    contributingFragments.map { it.toSignature(base) }, faceId, representationProfile, candidateRank,
+    profileRank, stage, reason, lastResortState,
 )
 
 private data class ObservableLineSignature(
@@ -1203,6 +1234,7 @@ private fun LineLayout.toObservableSignature(): ObservableLineSignature {
                 message = diagnostic.message,
                 sourceRange = diagnostic.sourceRange?.relativeTo(base),
                 glyphId = diagnostic.glyphId,
+                fallbackDiagnostic = diagnostic.fallbackDiagnostic?.toSignature(base),
             )
         },
         baseline = baseline,

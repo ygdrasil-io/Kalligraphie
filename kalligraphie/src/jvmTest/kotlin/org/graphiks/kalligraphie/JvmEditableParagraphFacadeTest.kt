@@ -21,6 +21,15 @@ import org.graphiks.kalligraphie.api.FontAssetResolverHandle
 import org.graphiks.kalligraphie.api.FontCatalogSnapshot
 import org.graphiks.kalligraphie.api.FontDiagnosticLocation
 import org.graphiks.kalligraphie.api.FontError
+import org.graphiks.kalligraphie.api.FontAccessRequirementsSnapshot
+import org.graphiks.kalligraphie.api.FontFallbackStage
+import org.graphiks.kalligraphie.api.FontFallbackReason
+import org.graphiks.kalligraphie.api.FontFallbackLastResortState
+import org.graphiks.kalligraphie.api.aggregateFallbackDiagnostics
+import org.graphiks.kalligraphie.api.GlyphPaintNodeKind
+import org.graphiks.kalligraphie.api.GlyphPaintCompositionMode
+import org.graphiks.kalligraphie.api.PaintGraphLimits
+import org.graphiks.kalligraphie.api.PaintGraphProfile
 import org.graphiks.kalligraphie.api.FontFaceId
 import org.graphiks.kalligraphie.api.FontInstanceDescriptor
 import org.graphiks.kalligraphie.api.FontOperationResult
@@ -53,6 +62,180 @@ import org.graphiks.kalligraphie.api.VisualNavigationDirection
 import org.graphiks.kalligraphie.shaping.JvmHarfBuzzShapingBackend
 
 class JvmEditableParagraphFacadeTest {
+    @Test
+    fun publishesLocalizedFallbackMaterializationRejection() {
+        val fixture = diagnosticFixture("AA", colorLastResort = true)
+        val resolver = assertIs<FontOperationResult.Success<FontAssetResolverHandle>>(fixture.catalog.openAssetResolver()).value
+        try {
+            val profile = diagnosticPaintProfile()
+            val result = assertIs<ParagraphLayoutResult.Success>(JvmEditableParagraphFacade.layout(request(
+                fixture, constraints(10_000f, 0f, 2_000f), materialization = EditableLineMaterialization.Renderable(
+                    resolver, org.graphiks.kalligraphie.api.FontRenderVariantSnapshot.default, FontAccessRequirementsSnapshot.renderable(listOf(profile)),
+                ),
+            )))
+            val line = result.layout.lines.single()
+            assertTrue(line.positionedGlyphRuns.all { it.fontInstanceKey.face == fixture.arabicFace })
+            val diagnostics = line.diagnostics.mapNotNull { it.fallbackDiagnostic }
+            val rejected = diagnostics.filter { it.faceId == fixture.latinFace }
+            assertEquals(listOf(range(fixture.snapshot, 0, 1), range(fixture.snapshot, 1, 2)), rejected.map { it.range })
+            rejected.forEach { diagnostic ->
+                assertSame(fixture.snapshot.version, diagnostic.textVersion)
+                assertEquals(diagnostic.range, diagnostic.unit.range)
+                assertEquals(diagnostic.unit.fragments, diagnostic.contributingFragments)
+                assertEquals(profile, diagnostic.representationProfile)
+                assertEquals(0, diagnostic.candidateRank)
+                assertEquals(0, diagnostic.profileRank)
+                assertEquals(FontFallbackStage.Materialization, diagnostic.stage)
+                assertEquals(FontFallbackReason.RepresentationUnavailable, diagnostic.reason)
+                assertEquals(FontFallbackLastResortState.NotLastResort, diagnostic.lastResortState)
+            }
+            val selected = diagnostics.filter { it.lastResortState == FontFallbackLastResortState.Selected }
+            assertEquals(2, selected.size)
+            assertTrue(selected.all { it.faceId == fixture.arabicFace && it.candidateRank == 1 })
+            val grouped = rejected.reversed().aggregateFallbackDiagnostics()
+            assertEquals(1, grouped.size)
+            assertEquals(rejected, grouped.single().members)
+            assertEquals(2, listOf(rejected.first(), rejected.first().copy(candidateRank = 2)).aggregateFallbackDiagnostics().size)
+            assertFailsWith<UnsupportedOperationException> { (grouped.single().members as MutableList<*>).clear() }
+            assertFailsWith<UnsupportedOperationException> { (rejected.first().contributingFragments as MutableList<*>).clear() }
+            val fragments = rejected.first().contributingFragments.toMutableList()
+            val copied = rejected.first().copy(contributingFragments = fragments)
+            fragments.clear()
+            assertEquals(rejected.first().contributingFragments, copied.contributingFragments)
+            assertFailsWith<IllegalArgumentException> { rejected.first().copy(textVersion = TextVersion.create()) }
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
+    fun reportsEveryExhaustedFallbackCandidateInCanonicalOrder() {
+        val fixture = diagnosticFixture("A", colorLastResort = false)
+        val resolver = assertIs<FontOperationResult.Success<FontAssetResolverHandle>>(fixture.catalog.openAssetResolver()).value
+        try {
+            val result = assertIs<ParagraphLayoutResult.Failure>(JvmEditableParagraphFacade.layout(request(
+                fixture, constraints(10_000f, 0f, 2_000f), materialization = EditableLineMaterialization.Renderable(
+                    resolver, org.graphiks.kalligraphie.api.FontRenderVariantSnapshot.default, FontAccessRequirementsSnapshot.renderable(listOf(diagnosticPaintProfile())),
+                ),
+            )))
+            val error = assertIs<FontError.UnrenderableFontResolution>(assertIs<ParagraphLayoutError.FontFailure>(result.error).fontError)
+            assertEquals(listOf(0, 1), error.fallbackDiagnostics.map { it.candidateRank })
+            assertEquals(listOf(fixture.latinFace, fixture.arabicFace), error.fallbackDiagnostics.map { it.faceId })
+            assertEquals(listOf(FontFallbackLastResortState.NotLastResort, FontFallbackLastResortState.Rejected),
+                error.fallbackDiagnostics.map { it.lastResortState })
+            assertTrue(error.fallbackDiagnostics.all { it.range == fixture.snapshot.range && it.profileRank == 0 })
+            assertEquals(error.fallbackDiagnostics, result.diagnostics.mapNotNull { it.fallbackDiagnostic })
+            assertFailsWith<UnsupportedOperationException> { (error.fallbackDiagnostics as MutableList<*>).clear() }
+            val supplied = error.fallbackDiagnostics.toMutableList()
+            val independentlyCaptured = FontError.UnrenderableFontResolution(error.message, error.location, supplied)
+            supplied.clear()
+            assertEquals(error, independentlyCaptured)
+        } finally {
+            resolver.close()
+        }
+    }
+
+    @Test
+    fun closedResolverRemainsTerminalWithoutInventingFallbackRejections() {
+        val fixture = diagnosticFixture("A", colorLastResort = true)
+        val resolver = assertIs<FontOperationResult.Success<FontAssetResolverHandle>>(fixture.catalog.openAssetResolver()).value
+        resolver.close()
+        val result = assertIs<ParagraphLayoutResult.Failure>(JvmEditableParagraphFacade.layout(request(
+            fixture, constraints(10_000f, 0f, 2_000f), materialization = EditableLineMaterialization.Renderable(
+                resolver, FontRenderVariantKey.default, diagnosticOutlineProfile(),
+            ),
+        )))
+        assertIs<FontError.ResourceClosed>(assertIs<ParagraphLayoutError.FontFailure>(result.error).fontError)
+        assertTrue(result.diagnostics.none { it.fallbackDiagnostic != null })
+    }
+
+    @Test
+    fun genericShapingFailureDoesNotClaimAContextProjectionFailure() {
+        val fixture = diagnosticFixture("A", colorLastResort = true)
+        val result = assertIs<ParagraphLayoutResult.Failure>(JvmEditableParagraphFacade.layout(request(
+            fixture, constraints(10_000f, 0f, 2_000f), features = listOf(OpenTypeFeature("rand", 1)),
+        )))
+        val error = assertIs<FontError.UnrenderableFontResolution>(assertIs<ParagraphLayoutError.FontFailure>(result.error).fontError)
+        assertEquals(listOf(0, 1), error.fallbackDiagnostics.map { it.candidateRank })
+        assertTrue(error.fallbackDiagnostics.all { it.stage == FontFallbackStage.Shaping })
+        assertTrue(error.fallbackDiagnostics.all { it.reason == FontFallbackReason.ShapingFailed })
+    }
+
+    @Test
+    fun keepsRejectedProfileBeforeSuccessfulMonoFaceLastResortSelection() {
+        val fixture = fontFixture("A\n", listOf(FontFixture("liberation/LiberationSans-Regular.ttf", "Liberation Sans")))
+        val resolver = assertIs<FontOperationResult.Success<FontAssetResolverHandle>>(fixture.catalog.openAssetResolver()).value
+        try {
+            val result = assertIs<ParagraphLayoutResult.Success>(JvmEditableParagraphFacade.layout(request(
+                fixture, constraints(10_000f, 0f, 2_000f), materialization = EditableLineMaterialization.Renderable(
+                    resolver, org.graphiks.kalligraphie.api.FontRenderVariantSnapshot.default,
+                    FontAccessRequirementsSnapshot.renderable(listOf(diagnosticPaintProfile(), diagnosticOutlineProfile())),
+                ),
+            )))
+            val allDiagnostics = result.layout.lines.flatMap { it.diagnostics }.mapNotNull { it.fallbackDiagnostic }
+            val diagnostics = allDiagnostics.filter { it.range == range(fixture.snapshot, 0, 1) }
+            assertEquals(listOf(0, 1), diagnostics.map { it.profileRank })
+            assertEquals(listOf(FontFallbackReason.RepresentationUnavailable, FontFallbackReason.LastResortSelected), diagnostics.map { it.reason })
+            assertEquals(listOf(FontFallbackLastResortState.Rejected, FontFallbackLastResortState.Selected), diagnostics.map { it.lastResortState })
+            assertTrue(diagnostics.all { it.candidateRank == 0 })
+            val control = allDiagnostics.single { it.range == range(fixture.snapshot, 1, 2) }
+            assertEquals(FontFallbackStage.Shaping, control.stage)
+            assertNull(control.representationProfile)
+            assertNull(control.profileRank)
+        } finally {
+            resolver.close()
+        }
+    }
+
+    private fun diagnosticFixture(text: String, colorLastResort: Boolean): ParagraphFixture = fontFixture(text, listOf(
+        FontFixture("liberation/LiberationSans-Regular.ttf", "Liberation Sans"),
+        if (colorLastResort) FontFixture("bungee-color/BungeeColor-Regular.ttf", "Bungee Color")
+        else FontFixture("amiri/Amiri-Regular.ttf", "Amiri"),
+    ))
+
+    @Test
+    fun checkpointsDistinguishFallbackDecisionsWhenFinalGlyphsAreIdentical() {
+        val fixture = fontFixture("A", listOf(
+            FontFixture("liberation/LiberationSans-Regular.ttf", "Liberation Sans"),
+            FontFixture("amiri/Amiri-Regular.ttf", "Amiri"),
+            FontFixture("bungee-color/BungeeColor-Regular.ttf", "Bungee Color"),
+        ))
+        val candidates = fixture.policy.candidates
+        val reordered = fixture.copy(policy = FontResolutionPolicySnapshot(
+            fixture.catalog.generation, "reordered-rejections", "1",
+            listOf(candidates[1], candidates[0], candidates[2]), candidates[2].faceId,
+        ))
+        val resolver = assertIs<FontOperationResult.Success<FontAssetResolverHandle>>(fixture.catalog.openAssetResolver()).value
+        try {
+            val materialization = EditableLineMaterialization.Renderable(
+                resolver, org.graphiks.kalligraphie.api.FontRenderVariantSnapshot.default,
+                FontAccessRequirementsSnapshot.renderable(listOf(diagnosticPaintProfile())),
+            )
+            val lines = listOf(fixture, reordered).map { input ->
+                assertIs<ParagraphLayoutResult.Success>(JvmEditableParagraphFacade.layout(request(
+                    input, constraints(10_000f, 0f, 2_000f), materialization = materialization,
+                ))).layout.lines.single()
+            }
+            assertEquals(lineFingerprint(lines[0]), lineFingerprint(lines[1]))
+            val continuation = org.graphiks.kalligraphie.api.LayoutContinuationSignature(fixture.snapshot.range.endExclusive, "same-end")
+            val checkpoints = lines.map { org.graphiks.kalligraphie.api.LineCheckpointSignature.from(it, continuation) }
+            assertFalse(checkpoints[0].hasSameObservableLayout(checkpoints[1]))
+        } finally {
+            resolver.close()
+        }
+    }
+
+    private fun diagnosticPaintProfile(): PaintGraphProfile = PaintGraphProfile(
+        acceptedNodeKinds = listOf(GlyphPaintNodeKind.SOLID_OUTLINE, GlyphPaintNodeKind.GROUP),
+        acceptedCompositionModes = listOf(GlyphPaintCompositionMode.SOURCE_OVER),
+        limits = PaintGraphLimits(maxNodes = 1_024, maxReferences = 1_024, maxDepth = 32),
+        outlineProfile = diagnosticOutlineProfile(),
+    )
+
+    private fun diagnosticOutlineProfile(): OutlineProfile = OutlineProfile(
+        maxBytes = 1_000_000, maxContours = 256, maxPoints = 16_384, maxCompositeDepth = 8, maxCompositeComponents = 256,
+    )
+
     @Test
     fun publicFacadeCertifiesLatinHebrewAndArabicFallbackFromMainArtifact() {
         val latin = mainArtifactFontSource("gdef-kern/GdefKerningFixture.ttf", "GDEF kerning fixture")

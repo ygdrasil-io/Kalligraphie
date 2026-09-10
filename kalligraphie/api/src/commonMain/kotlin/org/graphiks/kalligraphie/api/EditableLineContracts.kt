@@ -543,6 +543,8 @@ public data class EditableLineDiagnostic(
     public val sourceRange: TextRange? = null,
     /** Related final glyph when the condition has one. */
     public val glyphId: GlyphId? = null,
+    /** Complete typed fallback decision, including source revision, unit, profile and ranks. */
+    public val fallbackDiagnostic: FontFallbackDiagnostic? = null,
 ) {
     init {
         require(code.isNotBlank()) { "Editable-line diagnostic codes must not be blank." }

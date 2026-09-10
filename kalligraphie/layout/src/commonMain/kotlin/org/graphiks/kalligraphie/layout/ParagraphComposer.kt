@@ -244,7 +244,7 @@ public object ParagraphComposer : ParagraphLayouter {
             is FontOperationResult.Success -> resolved.value.shapedRuns
             is FontOperationResult.Failure -> return ParagraphCompositionResult.Failure(
                 resolved.error.toEditableResolutionError(),
-                resolved.diagnostics.map(::fontDiagnostic),
+                resolved.diagnostics.map(::fontDiagnostic) + resolved.error.fallbackLineDiagnostics(),
             )
             is FontOperationResult.Cancelled -> return ParagraphCompositionResult.Cancelled(
                 resolved.diagnostics.map(::fontDiagnostic),
@@ -482,7 +482,7 @@ public object ParagraphComposer : ParagraphLayouter {
                 is FontOperationResult.Success -> resolved.value.shapedRuns
                 is FontOperationResult.Failure -> return ParagraphCompositionResult.Failure(
                     resolved.error.toEditableResolutionError(),
-                    resolved.diagnostics.map(::fontDiagnostic),
+                    resolved.diagnostics.map(::fontDiagnostic) + resolved.error.fallbackLineDiagnostics(),
                 )
                 is FontOperationResult.Cancelled -> return ParagraphCompositionResult.Cancelled(
                     resolved.diagnostics.map(::fontDiagnostic),
@@ -920,16 +920,24 @@ public object ParagraphComposer : ParagraphLayouter {
                     finalRuns += resolved.value.shapedRuns
                     instances += resolved.value.instances
                     diagnostics += resolved.value.diagnostics.map(::fontDiagnostic)
+                    diagnostics += resolved.value.fallbackDiagnostics.map(::fallbackDiagnostic)
                 }
                 is FontOperationResult.Failure -> return FinalizationResult.Failure(
                     resolved.error.toEditableResolutionError(),
-                    diagnostics + resolved.diagnostics.map(::fontDiagnostic),
+                    diagnostics + resolved.diagnostics.map(::fontDiagnostic) + resolved.error.fallbackLineDiagnostics(),
                 )
                 is FontOperationResult.Cancelled -> return FinalizationResult.Cancelled(
                     diagnostics + resolved.diagnostics.map(::fontDiagnostic),
                 )
             }
         }
+        // Reflow may split shaping contexts differently; publication order must not expose that partition.
+        diagnostics.sortWith(compareBy<EditableLineDiagnostic> { it.fallbackDiagnostic != null }
+            .thenComparator { left, right ->
+                val a = left.fallbackDiagnostic
+                val b = right.fallbackDiagnostic
+                if (a == null || b == null) 0 else a.range.start.compareTo(b.range.start)
+            })
         val uniqueInstances = instances.distinctBy(FontInstance::key)
         val coalescedRuns = coalesceRuns(finalRuns)
         if (request.constraints.writingMode != WritingMode.HORIZONTAL_TB) {

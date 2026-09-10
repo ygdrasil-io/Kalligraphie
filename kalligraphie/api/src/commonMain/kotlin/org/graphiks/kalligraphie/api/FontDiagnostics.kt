@@ -292,13 +292,37 @@ public sealed interface FontError {
     }
 
     /** Every deterministic candidate was rejected for one indivisible fallback unit. */
-    public data class UnrenderableFontResolution(
+    public class UnrenderableFontResolution(
         /** Error message describing the exhausted fallback operation. */
         override val message: String,
         /** Location associated with the unresolved source range. */
         override val location: FontDiagnosticLocation = FontDiagnosticLocation.Source,
+        fallbackDiagnostics: List<FontFallbackDiagnostic> = emptyList(),
     ) : FontError {
+        /** Every local rejection in canonical source, stage and policy order; immutable. */
+        public val fallbackDiagnostics: List<FontFallbackDiagnostic> = fallbackDiagnostics.canonicalFallbackDiagnostics()
+
         override val code: String = "font.unrenderable-font-resolution"
+
+        /** Copies the exhausted operation while defensively capturing its rejection list. */
+        public fun copy(
+            message: String = this.message,
+            location: FontDiagnosticLocation = this.location,
+            fallbackDiagnostics: List<FontFallbackDiagnostic> = this.fallbackDiagnostics,
+        ): UnrenderableFontResolution = UnrenderableFontResolution(message, location, fallbackDiagnostics)
+
+        /** Returns the message for source-compatible destructuring. */
+        public operator fun component1(): String = message
+
+        /** Returns the location for source-compatible destructuring. */
+        public operator fun component2(): FontDiagnosticLocation = location
+
+        /** Compares independently captured exhaustion results by value. */
+        override fun equals(other: Any?): Boolean = other is UnrenderableFontResolution &&
+            message == other.message && location == other.location && fallbackDiagnostics == other.fallbackDiagnostics
+
+        /** Hashes the captured error and all localized rejection decisions. */
+        override fun hashCode(): Int = listOf(message, location, fallbackDiagnostics).hashCode()
     }
 }
 

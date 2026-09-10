@@ -136,7 +136,8 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                             verticalMetrics = positioned.line.verticalMetrics,
                             positionedGlyphRuns = positioned.line.positionedGlyphRuns,
                             caretCandidates = positioned.line.allCaretCandidates,
-                            diagnostics = positioned.line.diagnostics + resolved.value.diagnostics.map(::fontDiagnostic),
+                            diagnostics = positioned.line.diagnostics + resolved.value.diagnostics.map(::fontDiagnostic) +
+                                resolved.value.fallbackDiagnostics.map(::fallbackDiagnostic),
                         ),
                     )
 
@@ -153,7 +154,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                     )
                 else -> EditableLineResult.Failure(
                     EditableLineError.FontResolutionFailure(error),
-                    resolved.diagnostics.map(::fontDiagnostic),
+                    resolved.diagnostics.map(::fontDiagnostic) + error.fallbackLineDiagnostics(),
                 )
             }
 
@@ -1374,6 +1375,19 @@ internal fun fontDiagnostic(diagnostic: org.graphiks.kalligraphie.api.FontDiagno
         },
         message = diagnostic.message,
     )
+
+internal fun fallbackDiagnostic(diagnostic: org.graphiks.kalligraphie.api.FontFallbackDiagnostic): EditableLineDiagnostic =
+    EditableLineDiagnostic(
+        code = "font.fallback-decision",
+        severity = EditableLineDiagnosticSeverity.WARNING,
+        message = "Fallback ${diagnostic.stage}: ${diagnostic.reason}.",
+        sourceRange = diagnostic.range,
+        fallbackDiagnostic = diagnostic,
+    )
+
+internal fun org.graphiks.kalligraphie.api.FontError.fallbackLineDiagnostics(): List<EditableLineDiagnostic> =
+    (this as? org.graphiks.kalligraphie.api.FontError.UnrenderableFontResolution)
+        ?.fallbackDiagnostics?.map(::fallbackDiagnostic).orEmpty()
 
 private fun operationLimitFailure(
     exceeded: EditorOperationLimitExceeded,
