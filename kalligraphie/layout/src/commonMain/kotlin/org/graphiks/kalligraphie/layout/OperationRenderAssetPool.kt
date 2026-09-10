@@ -23,11 +23,15 @@ internal class OperationRenderAssetPool(
     private val assets = linkedMapOf<FontRenderAssetKey, FontRenderAssetHandle>()
     private var estimatedAssetBytes: Long = 0L
     private var closed: Boolean = false
+    private var terminalFailure: FontOperationResult.Failure? = null
 
     var closeFailure: FontError? = null
         private set
 
-    fun owns(key: FontRenderAssetKey): Boolean = !closed && key in assets
+    fun owns(key: FontRenderAssetKey): Boolean = !closed && terminalFailure == null && key in assets
+
+    fun isTerminalMaterializationFailure(failure: FontOperationResult.Failure): Boolean =
+        failure === terminalFailure || failure.error.isTerminalMaterializationFailure()
 
     fun acquire(
         instance: FontInstance,
@@ -35,6 +39,7 @@ internal class OperationRenderAssetPool(
         representationProfile: GlyphRepresentationProfile,
     ): FontOperationResult<FontRenderAssetHandle> {
         check(!closed) { "An operation render-asset pool cannot acquire after closure." }
+        terminalFailure?.let { return it }
         val key = FontRenderAssetKey(
             fontInstanceKey = instance.key,
             variant = materialization.renderVariant.key,
@@ -96,7 +101,12 @@ internal class OperationRenderAssetPool(
                     FontDiagnosticLocation.FaceId(instance.key.face),
                 )
                 val closeDiagnostics = closeUnexpectedAsset(acquired.value)
-                return FontOperationResult.Failure(mismatch, acquired.diagnostics + closeDiagnostics + mismatch.toDiagnostic())
+                val failure = FontOperationResult.Failure(
+                    mismatch,
+                    acquired.diagnostics + closeDiagnostics + mismatch.toDiagnostic(),
+                )
+                if (closeFailure != null) terminalFailure = failure
+                return failure
             }
             assets[key] = acquired.value
             estimatedAssetBytes = observedBytes

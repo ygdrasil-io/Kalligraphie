@@ -641,7 +641,7 @@ internal object FontFallbackResolver {
         ) {
             is FontOperationResult.Success -> acquired.value
             is FontOperationResult.Failure -> {
-                if (acquired.error.isTerminalMaterializationFailure()) {
+                if (pool.isTerminalMaterializationFailure(acquired)) {
                     return Validation.Failed(acquired.error, acquired.diagnostics)
                 }
                 onRejection(acquired.error.materializationReason(), materialization.requirements.acceptedProfiles.single())

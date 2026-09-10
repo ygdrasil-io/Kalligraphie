@@ -206,6 +206,8 @@ public object ParagraphComposer : ParagraphLayouter {
                 ParagraphCompositionResult.Failure(
                     EditableLineError.GeometryOverflow(overflow.message ?: "Paragraph geometry overflowed."),
                 )
+            } catch (cancelled: ParagraphCompositionCancelled) {
+                ParagraphCompositionResult.Cancelled(cancelled.diagnostics)
             } catch (terminal: ParagraphTerminalMaterializationFailure) {
                 ParagraphCompositionResult.Failure(terminal.error, terminal.diagnostics)
             }
@@ -437,6 +439,8 @@ public object ParagraphComposer : ParagraphLayouter {
                 ParagraphCompositionResult.Failure(
                     EditableLineError.GeometryOverflow(overflow.message ?: "Paragraph geometry overflowed."),
                 )
+            } catch (cancelled: ParagraphCompositionCancelled) {
+                ParagraphCompositionResult.Cancelled(cancelled.diagnostics)
             } catch (terminal: ParagraphTerminalMaterializationFailure) {
                 ParagraphCompositionResult.Failure(terminal.error, terminal.diagnostics)
             }
@@ -1618,7 +1622,7 @@ public object ParagraphComposer : ParagraphLayouter {
                 is FinalizationResult.Failure -> {
                     finalized.throwIfTerminalMaterializationFailure()
                 }
-                else -> Unit
+                is FinalizationResult.Cancelled -> throw ParagraphCompositionCancelled(finalized.diagnostics)
             }
         }
         val markerWidth = widthOfEllipsisMarker(request, prefixInstances.values.firstOrNull().orEmpty())
@@ -1730,7 +1734,7 @@ public object ParagraphComposer : ParagraphLayouter {
                 finalized.throwIfTerminalMaterializationFailure()
                 null
             }
-            else -> null
+            is FinalizationResult.Cancelled -> throw ParagraphCompositionCancelled(finalized.diagnostics)
         }
     }
 
@@ -2376,6 +2380,10 @@ private class ParagraphTerminalMaterializationFailure(
     val error: EditableLineError,
     val diagnostics: List<EditableLineDiagnostic>,
 ) : IllegalStateException(error.message)
+
+private class ParagraphCompositionCancelled(
+    val diagnostics: List<EditableLineDiagnostic>,
+) : IllegalStateException("Paragraph composition was cancelled during ellipsis finalization.")
 
     private fun <Element> Iterable<Element>.immutableSnapshot(): List<Element> = ParagraphImmutableList(toList())
 

@@ -982,7 +982,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                                         EditableLineError.FontMaterializationFailure(acquiredError)
                                     },
                                     acquired.diagnostics.map(::fontDiagnostic),
-                                    terminal = acquiredError.isTerminalMaterializationFailure(),
+                                    terminal = pool.isTerminalMaterializationFailure(acquired),
                                 )
                                 if (failure.terminal) return failure
                                 if (firstFailure == null) firstFailure = failure
@@ -1133,6 +1133,7 @@ public object ExactEditableLineLayouter : EditableLineLayouter {
                         result = CertificationResult.Failure(
                             EditableLineError.FontMaterializationFailure(representation.error),
                             representation.diagnostics.map(::fontDiagnostic),
+                            terminal = representation.error.isTerminalMaterializationFailure(),
                         )
                         break@certification
                     }
