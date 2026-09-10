@@ -220,9 +220,10 @@ private fun saturatedAdd(left: Long, right: Long): Long =
     if (left > Long.MAX_VALUE - right) Long.MAX_VALUE else left + right
 
 /**
- * Admission, preparation and release share one lock. A reservation is inserted before native
- * allocation; concurrent shape calls may share a prepared font, but can never oversubscribe it.
- * Keeping destruction under the lock prevents another allocation from racing an idle eviction.
+ * Source copying and its public callbacks run outside the lock. Admission, native preparation
+ * and release share one lock; after copying, acquisition rechecks closure and an existing font
+ * before reserving any native allocation. Keeping destruction under the lock prevents another
+ * allocation from racing an idle eviction.
  */
 private class PreparedFontCache(private val policy: JvmPreparedFontCachePolicy) {
     private val lock = Any()
@@ -244,41 +245,52 @@ private class PreparedFontCache(private val policy: JvmPreparedFontCachePolicy) 
         key: FontInstanceKey,
         source: () -> ByteArray,
         create: (ByteArray) -> PreparedHarfBuzzFont,
-    ): Lease = synchronized(lock) {
-        if (closed || releaseFailed) throw PreparedFontFailure(FontOperationResult.Failure(
-            FontError.ResourceClosed("The pinned HarfBuzz backend is closed."),
-        ))
-        entries[key]?.let { entry ->
-            entry.activeLeases += 1
-            return@synchronized Lease(checkNotNull(entry.value)) { releaseLease(key, entry) }
-        }
-        val bytes = source()
-        if (closed || releaseFailed) throw PreparedFontFailure(FontOperationResult.Failure(
-            FontError.ResourceClosed("The pinned HarfBuzz backend is closed."),
-        ))
-        val footprint = preparedFontFootprint(bytes.size.toLong())
-        if (!fits(footprint, emptyList())) reject()
-        while (!fits(footprint, entries.values)) {
-            val idle = entries.entries.firstOrNull { it.value.activeLeases == 0 } ?: reject()
-            // Release before subtracting accounting or admitting new native memory.
-            try {
-                checkNotNull(idle.value.value).close()
-            } catch (error: Throwable) {
-                // A failed native destruction must neither be retried nor permit more allocation.
-                releaseFailed = true
-                throw error
-            } finally {
-                entries.remove(idle.key)
+    ): Lease {
+        synchronized(lock) {
+            if (closed || releaseFailed) throw PreparedFontFailure(FontOperationResult.Failure(
+                FontError.ResourceClosed("The pinned HarfBuzz backend is closed."),
+            ))
+            entries[key]?.let { entry ->
+                entry.activeLeases += 1
+                return Lease(checkNotNull(entry.value)) { releaseLease(key, entry) }
             }
         }
-        val reservation = Entry(footprint, activeLeases = 1)
-        entries[key] = reservation
-        try {
-            reservation.value = create(bytes)
-            Lease(checkNotNull(reservation.value)) { releaseLease(key, reservation) }
-        } catch (error: Throwable) {
-            entries.remove(key)
-            throw error
+
+        // Font providers and cancellation tokens may reenter this backend or close it.
+        val bytes = source()
+        val footprint = preparedFontFootprint(bytes.size.toLong())
+        return synchronized(lock) {
+            if (closed || releaseFailed) throw PreparedFontFailure(FontOperationResult.Failure(
+                FontError.ResourceClosed("The pinned HarfBuzz backend is closed."),
+            ))
+            // A concurrent or nested acquisition may have prepared this key while copying.
+            entries[key]?.let { entry ->
+                entry.activeLeases += 1
+                return@synchronized Lease(checkNotNull(entry.value)) { releaseLease(key, entry) }
+            }
+            if (!fits(footprint, emptyList())) reject()
+            while (!fits(footprint, entries.values)) {
+                val idle = entries.entries.firstOrNull { it.value.activeLeases == 0 } ?: reject()
+                // Release before subtracting accounting or admitting new native memory.
+                try {
+                    checkNotNull(idle.value.value).close()
+                } catch (error: Throwable) {
+                    // A failed native destruction must neither be retried nor permit more allocation.
+                    releaseFailed = true
+                    throw error
+                } finally {
+                    entries.remove(idle.key)
+                }
+            }
+            val reservation = Entry(footprint, activeLeases = 1)
+            entries[key] = reservation
+            try {
+                reservation.value = create(bytes)
+                Lease(checkNotNull(reservation.value)) { releaseLease(key, reservation) }
+            } catch (error: Throwable) {
+                entries.remove(key)
+                throw error
+            }
         }
     }
 
