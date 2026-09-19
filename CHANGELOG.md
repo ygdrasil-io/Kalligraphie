@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The documentation site now embeds the API reference for the Kalligraphie modules.
 
 ### Added
+- The conformance module now defines a canonical portable corpus and a reference oracle that reproduces every expected canonical envelope, with an explicit, empty tolerance catalog because decoding conformance is bit-identical.
 - The non-published conformance module now carries a portable editor corpus: a scenario model, a versioned canonical observation envelope, portable decoding scenarios executed on JVM and Kotlin/Native, and capability gating that yields a deterministic absence diagnostic instead of an observation.
 - Portable decoding conformance tests exercise the public facade from `commonTest` on JVM and Kotlin/Native, proving the portable text pipeline is usable without any platform type crossing `commonMain`.
 - A non-published `:kalligraphie:conformance` module is introduced to host the portable conformance contract (comparison classes, canonical unit, tolerances, diagnostic comparison and capability identities) in `commonMain`, without being published to Maven Central.
