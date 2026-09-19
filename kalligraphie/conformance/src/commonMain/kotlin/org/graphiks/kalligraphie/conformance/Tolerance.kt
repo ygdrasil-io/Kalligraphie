@@ -15,7 +15,11 @@ public sealed interface ToleranceUnit {
     public data class Canonical(public val unit: CanonicalUnit) : ToleranceUnit
 
     /** Route-native unit, valid only in [ToleranceScope.INTRA_PLATFORM]. */
-    public data class RouteNative(public val routeUnitId: String) : ToleranceUnit
+    public data class RouteNative(public val routeUnitId: String) : ToleranceUnit {
+        init {
+            require(routeUnitId.isNotBlank()) { "A route-native unit requires a non-blank identifier." }
+        }
+    }
 }
 
 /**
@@ -36,6 +40,45 @@ public class Tolerance private constructor(
     /** Non-blank justification tied to [unit]. */
     public val justification: String,
 ) {
+    init {
+        require(quantity.declaredClass() == ComparisonClass.NUMERIC_TOLERANCE) {
+            "$quantity is not compared under a numeric tolerance."
+        }
+        require(maxDeviation > 0.0 && maxDeviation.isFinite()) {
+            "maxDeviation must be finite and strictly positive."
+        }
+        require(justification.isNotBlank()) {
+            "A tolerance requires a justification tied to its unit."
+        }
+        require(scope == ToleranceScope.INTRA_PLATFORM || unit is ToleranceUnit.Canonical) {
+            "A cross-platform tolerance must be expressed in the canonical unit."
+        }
+    }
+
+    /** Compares every declared tolerance field, giving tolerances value semantics. */
+    override fun equals(other: Any?): Boolean =
+        this === other || (other is Tolerance &&
+            quantity == other.quantity &&
+            scope == other.scope &&
+            unit == other.unit &&
+            maxDeviation == other.maxDeviation &&
+            justification == other.justification)
+
+    /** Returns a stable hash of every declared tolerance field. */
+    override fun hashCode(): Int {
+        var result = quantity.hashCode()
+        result = 31 * result + scope.hashCode()
+        result = 31 * result + unit.hashCode()
+        result = 31 * result + maxDeviation.hashCode()
+        result = 31 * result + justification.hashCode()
+        return result
+    }
+
+    /** Returns a diagnostic form containing every declared tolerance field. */
+    override fun toString(): String =
+        "Tolerance(quantity=$quantity, scope=$scope, unit=$unit, " +
+            "maxDeviation=$maxDeviation, justification=$justification)"
+
     /** Factories for scope-valid, justified tolerances. */
     public companion object {
         /** Declares a tolerance, enforcing every conformance invariant. */
@@ -45,20 +88,6 @@ public class Tolerance private constructor(
             unit: ToleranceUnit,
             maxDeviation: Double,
             justification: String,
-        ): Tolerance {
-            require(quantity.declaredClass() == ComparisonClass.NUMERIC_TOLERANCE) {
-                "$quantity is not compared under a numeric tolerance."
-            }
-            require(maxDeviation > 0.0 && maxDeviation.isFinite()) {
-                "maxDeviation must be finite and strictly positive."
-            }
-            require(justification.isNotBlank()) {
-                "A tolerance requires a justification tied to its unit."
-            }
-            require(scope == ToleranceScope.INTRA_PLATFORM || unit is ToleranceUnit.Canonical) {
-                "A cross-platform tolerance must be expressed in the canonical unit."
-            }
-            return Tolerance(quantity, scope, unit, maxDeviation, justification)
-        }
+        ): Tolerance = Tolerance(quantity, scope, unit, maxDeviation, justification)
     }
 }

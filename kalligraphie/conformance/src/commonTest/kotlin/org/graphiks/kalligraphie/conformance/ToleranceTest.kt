@@ -3,6 +3,7 @@ package org.graphiks.kalligraphie.conformance
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 
 class ToleranceTest {
     @Test
@@ -44,7 +45,7 @@ class ToleranceTest {
     }
 
     @Test
-    fun rejectsNonNumericZeroAndUnjustifiedTolerances() {
+    fun rejectsANonNumericQuantity() {
         assertFailsWith<IllegalArgumentException> {
             Tolerance.declare(
                 ComparisonQuantity.GLYPH_INDEX,
@@ -54,6 +55,10 @@ class ToleranceTest {
                 "not applicable",
             )
         }
+    }
+
+    @Test
+    fun rejectsAZeroDeviation() {
         assertFailsWith<IllegalArgumentException> {
             Tolerance.declare(
                 ComparisonQuantity.ADVANCE,
@@ -63,6 +68,31 @@ class ToleranceTest {
                 "zero is not a tolerance",
             )
         }
+    }
+
+    @Test
+    fun rejectsANegativeOrNonFiniteDeviation() {
+        val invalidDeviations = listOf(
+            -0.5,
+            Double.NaN,
+            Double.POSITIVE_INFINITY,
+            Double.NEGATIVE_INFINITY,
+        )
+        for (deviation in invalidDeviations) {
+            assertFailsWith<IllegalArgumentException> {
+                Tolerance.declare(
+                    ComparisonQuantity.ADVANCE,
+                    ToleranceScope.CROSS_PLATFORM,
+                    ToleranceUnit.Canonical(CanonicalUnit.FONT_DESIGN_UNIT),
+                    deviation,
+                    "deviation must be finite and strictly positive",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun rejectsABlankJustification() {
         assertFailsWith<IllegalArgumentException> {
             Tolerance.declare(
                 ComparisonQuantity.ADVANCE,
@@ -71,6 +101,43 @@ class ToleranceTest {
                 0.5,
                 "   ",
             )
+        }
+    }
+
+    @Test
+    fun treatsContentIdenticalTolerancesAsEqual() {
+        val first = Tolerance.declare(
+            ComparisonQuantity.ADVANCE,
+            ToleranceScope.CROSS_PLATFORM,
+            ToleranceUnit.Canonical(CanonicalUnit.FONT_DESIGN_UNIT),
+            0.5,
+            "Half a design unit.",
+        )
+        val second = Tolerance.declare(
+            ComparisonQuantity.ADVANCE,
+            ToleranceScope.CROSS_PLATFORM,
+            ToleranceUnit.Canonical(CanonicalUnit.FONT_DESIGN_UNIT),
+            0.5,
+            "Half a design unit.",
+        )
+        assertEquals(first, second)
+        assertEquals(first.hashCode(), second.hashCode())
+        assertEquals(first.toString(), second.toString())
+
+        val different = Tolerance.declare(
+            ComparisonQuantity.ADVANCE,
+            ToleranceScope.CROSS_PLATFORM,
+            ToleranceUnit.Canonical(CanonicalUnit.FONT_DESIGN_UNIT),
+            0.25,
+            "Quarter of a design unit.",
+        )
+        assertNotEquals(first, different)
+    }
+
+    @Test
+    fun rejectsABlankRouteNativeUnitId() {
+        assertFailsWith<IllegalArgumentException> {
+            ToleranceUnit.RouteNative("   ")
         }
     }
 }
