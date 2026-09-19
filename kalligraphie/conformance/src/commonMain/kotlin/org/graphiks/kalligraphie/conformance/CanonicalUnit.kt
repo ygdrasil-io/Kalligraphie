@@ -16,6 +16,8 @@ public enum class CanonicalUnit {
  *
  * The reference face is declared by the profile owning the scale; this type deliberately
  * carries only the conversion factor so it stays independent of a particular font.
+ * The canonical target is [CanonicalUnit.FONT_DESIGN_UNIT]; it is kept implicit in the API
+ * while it remains the only canonical unit.
  *
  * @property routeUnitsPerCanonicalUnit strictly positive number of native route units
  *   that equal one canonical design unit.
@@ -29,5 +31,10 @@ public value class CanonicalScale(public val routeUnitsPerCanonicalUnit: Double)
     }
 
     /** Converts [routeValue] expressed in the route's native unit into canonical design units. */
-    public fun toCanonical(routeValue: Double): Double = routeValue / routeUnitsPerCanonicalUnit
+    public fun toCanonical(routeValue: Double): Double {
+        require(routeValue.isFinite()) { "routeValue must be finite." }
+        val canonical = routeValue / routeUnitsPerCanonicalUnit
+        require(canonical.isFinite()) { "Canonical conversion overflowed to a non-finite value." }
+        return canonical
+    }
 }
