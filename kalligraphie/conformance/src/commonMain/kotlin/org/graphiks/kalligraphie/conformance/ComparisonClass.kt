@@ -40,13 +40,16 @@ public enum class ComparisonQuantity {
     /** Identity of a reported diagnostic. */
     DIAGNOSTIC_IDENTITY,
 
-    /** Reported ordering of diagnostics. */
+    /** Emitted order of typed diagnostics, which is deterministic and therefore bit-identical within a profile. */
     DIAGNOSTIC_ORDER,
 
     /** Line break decision made for a break candidate. */
     LINE_BREAK_DECISION,
 
-    /** Reported ordering of fallback candidates. */
+    /**
+     * Resolved ordering of fallback candidates, whose tie-breaking is
+     * implementation-defined and therefore only structurally identical.
+     */
     FALLBACK_CANDIDATE_ORDER,
 
     /** Resolved bidirectional level or direction. */
@@ -67,7 +70,10 @@ public enum class ComparisonQuantity {
 
 /** Execution context of a comparison. */
 @JvmInline
-public value class ComparisonScope(public val sameImplementationProfile: Boolean)
+public value class ComparisonScope(
+    /** Whether both compared executions are backed by the same portable implementation profile. */
+    public val sameImplementationProfile: Boolean,
+)
 
 /** Comparison class intrinsically declared by [this] quantity, before profile conditioning. */
 public fun ComparisonQuantity.declaredClass(): ComparisonClass = when (this) {

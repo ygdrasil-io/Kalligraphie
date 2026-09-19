@@ -32,4 +32,30 @@ class ComparisonClassTest {
         assertEquals(ComparisonClass.STRUCTURALLY_IDENTICAL, ComparisonQuantity.BIDI_RESOLUTION.effectiveClass(crossProfile))
         assertEquals(ComparisonClass.NUMERIC_TOLERANCE, ComparisonQuantity.ADVANCE.effectiveClass(crossProfile))
     }
+
+    @Test
+    fun declaresTheComparisonClassOfEveryQuantity() {
+        val expected = mapOf(
+            ComparisonQuantity.CODEPOINT_BOUNDARY to ComparisonClass.BIT_IDENTICAL,
+            ComparisonQuantity.GRAPHEME_BOUNDARY to ComparisonClass.BIT_IDENTICAL,
+            ComparisonQuantity.CLUSTER_INDEX to ComparisonClass.BIT_IDENTICAL,
+            ComparisonQuantity.GLYPH_INDEX to ComparisonClass.BIT_IDENTICAL,
+            ComparisonQuantity.CARET_INTEGER_POSITION to ComparisonClass.BIT_IDENTICAL,
+            ComparisonQuantity.LINE_INDEX to ComparisonClass.BIT_IDENTICAL,
+            ComparisonQuantity.FRAGMENT_INDEX to ComparisonClass.BIT_IDENTICAL,
+            ComparisonQuantity.DIAGNOSTIC_IDENTITY to ComparisonClass.BIT_IDENTICAL,
+            ComparisonQuantity.DIAGNOSTIC_ORDER to ComparisonClass.BIT_IDENTICAL,
+            ComparisonQuantity.LINE_BREAK_DECISION to ComparisonClass.STRUCTURALLY_IDENTICAL,
+            ComparisonQuantity.FALLBACK_CANDIDATE_ORDER to ComparisonClass.STRUCTURALLY_IDENTICAL,
+            ComparisonQuantity.BIDI_RESOLUTION to ComparisonClass.STRUCTURALLY_IDENTICAL,
+            ComparisonQuantity.ADVANCE to ComparisonClass.NUMERIC_TOLERANCE,
+            ComparisonQuantity.ORIGIN to ComparisonClass.NUMERIC_TOLERANCE,
+            ComparisonQuantity.BOX to ComparisonClass.NUMERIC_TOLERANCE,
+            ComparisonQuantity.CARET_FRACTIONAL_POSITION to ComparisonClass.NUMERIC_TOLERANCE,
+        )
+        assertEquals(ComparisonQuantity.entries.toSet(), expected.keys)
+        ComparisonQuantity.entries.forEach { quantity ->
+            assertEquals(expected.getValue(quantity), quantity.declaredClass(), quantity.name)
+        }
+    }
 }
