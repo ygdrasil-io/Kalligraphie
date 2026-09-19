@@ -11,6 +11,7 @@ import org.graphiks.kalligraphie.conformance.PortableCapabilityIdentity
 import org.graphiks.kalligraphie.conformance.declaredClass
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class ReferenceOracleTest {
     private val version = TextVersion.create()
@@ -92,5 +93,7 @@ diagnostics=text.malformed-utf8""",
         // compared bit-identically and contributes no entry to the tolerance catalog.
         assertEquals(ComparisonClass.BIT_IDENTICAL, ComparisonQuantity.CODEPOINT_BOUNDARY.declaredClass())
         assertEquals(ComparisonClass.BIT_IDENTICAL, ComparisonQuantity.DIAGNOSTIC_ORDER.declaredClass())
+        // The reference corpus requires no numeric tolerance while decoding results are bit-identical.
+        assertTrue(ReferenceToleranceCatalog.tolerances.isEmpty())
     }
 }
