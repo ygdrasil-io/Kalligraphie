@@ -142,6 +142,7 @@ Choose the narrowest applicable scope from the current project structure:
 | `apple` | Apple font integration in `:kalligraphie:platform:apple` |
 | `buildSrc` | Gradle conventions in `buildSrc/` |
 | `ci` | Automated repository checks in `.github/workflows/` and `.github/scripts/` |
+| `conformance` | Portable conformance contract and corpus in `:kalligraphie:conformance` |
 | `docs` | Documentation in `docs/` and repository documentation files |
 | `release` | Release workflow, publication and versioning |
 
