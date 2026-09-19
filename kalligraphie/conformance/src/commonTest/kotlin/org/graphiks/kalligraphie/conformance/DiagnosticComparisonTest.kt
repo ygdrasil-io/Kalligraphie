@@ -27,7 +27,8 @@ class DiagnosticComparisonTest {
         val a = diagnostic("a", "first")
         val b = diagnostic("b", "second")
         val result = compareDiagnostics(listOf(a, b), listOf(b, a))
-        assertIs<DiagnosticComparison.OrderDivergence>(result)
+        val divergence = assertIs<DiagnosticComparison.OrderDivergence>(result)
+        assertEquals(listOf(a, b), divergence.canonical)
     }
 
     @Test
@@ -38,5 +39,16 @@ class DiagnosticComparisonTest {
         val mismatch = assertIs<DiagnosticComparison.Mismatch>(result)
         assertEquals(listOf(a), mismatch.expected)
         assertEquals(listOf(a, b), mismatch.actual)
+    }
+
+    @Test
+    fun canonicalisesBothSidesOfAMismatch() {
+        val a = diagnostic("a", "first")
+        val b = diagnostic("b", "second")
+        val c = diagnostic("c", "third")
+        val result = compareDiagnostics(listOf(b, a), listOf(c, a))
+        val mismatch = assertIs<DiagnosticComparison.Mismatch>(result)
+        assertEquals(listOf(a, b), mismatch.expected)
+        assertEquals(listOf(a, c), mismatch.actual)
     }
 }
