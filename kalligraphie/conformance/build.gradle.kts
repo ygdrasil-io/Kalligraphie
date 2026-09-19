@@ -9,6 +9,7 @@ kotlin {
             api(project(":kalligraphie:api"))
         }
         commonTest.dependencies {
+            implementation(project(":kalligraphie"))
             implementation(kotlin("test"))
         }
     }
