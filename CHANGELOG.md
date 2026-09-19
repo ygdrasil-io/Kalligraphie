@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The documentation site now embeds the API reference for the Kalligraphie modules.
 
 ### Added
+- Portable conformance now announces an explicit, compiled capability identity per platform and verifies cross-platform capability gating: JVM declares the complete reference surface, while Apple and Android declare Unicode analysis, shaping and end-to-end layout absent and the portable glyph representation route present.
 - Portable conformance now verifies cancellation and atomicity through observable effects: a cancelled or limit-exceeded decoding operation publishes no partial snapshot or diagnostics.
 - The conformance module now defines a canonical portable corpus and a reference oracle that reproduces every expected canonical envelope, with an explicit, empty tolerance catalog because decoding conformance is bit-identical.
 - The non-published conformance module now carries a portable editor corpus: a scenario model, a versioned canonical observation envelope, portable decoding scenarios executed on JVM and Kotlin/Native, and capability gating that yields a deterministic absence diagnostic instead of an observation.
