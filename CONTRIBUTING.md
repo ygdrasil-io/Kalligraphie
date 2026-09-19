@@ -138,11 +138,11 @@ Choose the narrowest applicable scope from the current project structure:
 | `glyph` | Glyph representation materialization in `:kalligraphie:font:glyph` |
 | `shaping` | Text shaping backends in `:kalligraphie:shaping` |
 | `layout` | Text layout and editing geometry in `:kalligraphie:layout` |
+| `conformance` | Portable conformance contract and corpus in `:kalligraphie:conformance` |
 | `platform` | Platform integration across the `kalligraphie/platform/` module family |
 | `apple` | Apple font integration in `:kalligraphie:platform:apple` |
 | `buildSrc` | Gradle conventions in `buildSrc/` |
 | `ci` | Automated repository checks in `.github/workflows/` and `.github/scripts/` |
-| `conformance` | Portable conformance contract and corpus in `:kalligraphie:conformance` |
 | `docs` | Documentation in `docs/` and repository documentation files |
 | `release` | Release workflow, publication and versioning |
 
