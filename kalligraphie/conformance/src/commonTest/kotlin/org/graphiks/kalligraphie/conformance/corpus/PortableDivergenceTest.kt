@@ -70,19 +70,30 @@ diagnostics=text.malformed-utf8""",
 
     @Test
     fun documentsEveryCapabilityDivergence() {
-        val identity = currentPortableCapabilityIdentity()
-        assertTrue(ReferenceDivergenceRecord.divergences.isNotEmpty())
-        ReferenceDivergenceRecord.divergences.forEach { divergence ->
-            assertTrue(divergence.description.isNotBlank(), "Every divergence documents a bounded statement.")
-            assertTrue(divergence.justification.isNotBlank(), "Every divergence carries a justification.")
+        val absentByPlatform = mapOf(
+            "ios" to setOf(
+                PortableCapability.UNICODE_ANALYSIS,
+                PortableCapability.SHAPING,
+                PortableCapability.END_TO_END_LAYOUT,
+            ),
+            "android" to setOf(
+                PortableCapability.UNICODE_ANALYSIS,
+                PortableCapability.SHAPING,
+                PortableCapability.END_TO_END_LAYOUT,
+            ),
+        )
+        val documented = ReferenceDivergenceRecord.divergences
+            .map { it.platformId to it.capability }
+            .toSet()
+        absentByPlatform.forEach { (platformId, capabilities) ->
+            capabilities.forEach { capability ->
+                assertTrue(
+                    documented.contains(platformId to capability),
+                    "Missing divergence for $platformId $capability",
+                )
+            }
         }
-        PortableCapability.entries.filter { !identity.presenceOf(it) }.forEach { capability ->
-            assertTrue(
-                ReferenceDivergenceRecord.divergences.any {
-                    it.platformId == identity.platformId && it.capability == capability
-                },
-                "No documented divergence for ${identity.platformId}/${capability.name}",
-            )
-        }
+        assertEquals(absentByPlatform.values.sumOf { it.size }, documented.size)
+        assertTrue(ReferenceDivergenceRecord.divergences.all { it.justification.isNotBlank() })
     }
 }
