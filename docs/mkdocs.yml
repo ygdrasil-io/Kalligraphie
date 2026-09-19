@@ -54,6 +54,7 @@ nav:
   - Editable-line Measurement: editable-line-measurement.md
   - Glyph Materialization Measurement: glyph-materialization-measurement.md
   - Apple M2 Max Materialization Reference: glyph-materialization-reference-apple-m2-max.md
+  - Conformance Matrix: conformance-matrix.md
   - Editable Paragraphs: editable-paragraphs.md
   - Incremental Layout Measurement: incremental-layout-measurement.md
   - Advanced Typography: advanced-typography.md
