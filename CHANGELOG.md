@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The documentation site now embeds the API reference for the Kalligraphie modules.
 
 ### Added
+- Portable conformance now documents bounded platform divergences as explicit capability records and verifies that decoding observables are platform-invariant, so the only admissible cross-platform difference is the declared capability identity.
 - Portable conformance now includes Android instrumented device tests: a Gradle Managed Device is declared for the conformance module, the portable facade is exercised on a real Android runtime, and the test task was validated on an emulator.
 - Portable conformance now announces an explicit, compiled capability identity per platform and verifies cross-platform capability gating: JVM declares the complete reference surface, while Apple and Android declare Unicode analysis, shaping and end-to-end layout absent and the portable glyph representation route present.
 - Portable conformance now verifies cancellation and atomicity through observable effects: a cancelled or limit-exceeded decoding operation publishes no partial snapshot or diagnostics.

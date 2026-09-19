@@ -12,4 +12,16 @@ public data class ConformanceObservation(
     public val sourceUnitWidths: List<Int>,
     /** Emitted diagnostic codes, in emitted order. */
     public val diagnosticCodes: List<String>,
-)
+) {
+    /**
+     * Observables independent of the producing platform: every field except the capability
+     * fingerprint. Two platforms that agree here produce the same portable outcome, and the only
+     * admissible difference is the explicitly declared capability identity.
+     */
+    public fun observableEnvelope(): String = buildString {
+        append("scenario=").append(scenarioId).appendLine()
+        append("scalars=").append(scalars.joinToString(",")).appendLine()
+        append("widths=").append(sourceUnitWidths.joinToString(",")).appendLine()
+        append("diagnostics=").append(diagnosticCodes.joinToString(","))
+    }
+}
