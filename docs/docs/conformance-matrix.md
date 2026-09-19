@@ -40,10 +40,11 @@ capability a scenario requires instead of producing an observation.
 
 Decoding and cancellation/atomicity are portable behaviors rather than gated
 capabilities: every reference platform executes them. Their observables are
-platform-invariant, so the exact same observable envelopes are asserted on JVM,
-iOS, and Android. The only admissible cross-platform difference is the declared
-capability identity. This matrix claims no shaping or end-to-end layout
-conformance on Apple or Android.
+platform-invariant. The observable envelopes are asserted identically on JVM and
+iOS, and the corresponding observable values are reproduced on Android through
+the public facade's device tests. The only admissible cross-platform difference
+is the declared capability identity. This matrix claims no shaping or end-to-end
+layout conformance on Apple or Android.
 
 ## Corpus and invariant observables
 
@@ -121,17 +122,17 @@ tied to the contract rather than a tolerance chosen to hide a regression.
 ## Known limitations
 
 - Portable Unicode analysis and shaping are owned by separate workstreams: the
-  system font providers (#58) and the HarfBuzz bindings to kffi (#59). Until
-  they land, Apple and Android cannot execute the Unicode analysis, shaping, or
-  end-to-end layout stages.
+  system-font-provider workstream and the HarfBuzz/kffi bindings workstream.
+  Until they land, Apple and Android cannot execute the Unicode analysis,
+  shaping, or end-to-end layout stages.
 - `iosArm64` is compiled but not device-executed on hosted runners; the
   Kotlin/Native verification route is `iosSimulatorArm64Test`.
 - The Android device APK currently exercises the public portable facade rather
   than the shared `commonTest` corpus, because `androidDeviceTest` does not
   inherit `commonTest`.
-- The Gradle Managed Device task
-  `:kalligraphie:conformance:mediumPhoneAndroidDeviceTest` is declared for CI but
-  has not yet been executed in CI; the Android route was validated locally on an
-  emulator through `connectedAndroidDeviceTest`.
+- The `mediumPhone` Gradle Managed Device is declared in the build, but its
+  task `:kalligraphie:conformance:mediumPhoneAndroidDeviceTest` is not yet
+  executed in CI; the Android route was validated locally on an emulator through
+  `connectedAndroidDeviceTest`.
 - `:kalligraphie:conformance` is intentionally non-published: the contract,
   corpus, and oracle are test tooling, not a consumer dependency.

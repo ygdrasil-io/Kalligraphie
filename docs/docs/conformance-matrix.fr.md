@@ -42,11 +42,13 @@ indisponible requise par un scénario, au lieu de produire une observation.
 
 Le décodage et l'annulation/atomicité sont des comportements portables, non des
 capacités contrôlées par une porte (gate) : chaque plateforme de référence les
-exécute. Leurs observables sont invariants selon la plateforme, si bien que les
-mêmes enveloppes observables sont vérifiées sur JVM, iOS et Android. La seule
-différence inter-plateformes admissible est l'identité de capacités déclarée.
-Cette matrice ne revendique aucune conformité de shaping (façonnage) ni de mise
-en page de bout en bout sur Apple ou Android.
+exécute. Leurs observables sont invariants selon la plateforme. Les enveloppes
+observables sont vérifiées à l'identique sur JVM et iOS, et les valeurs
+observables correspondantes sont reproduites sur Android par les tests sur
+appareil de la façade publique. La seule différence inter-plateformes admissible
+est l'identité de capacités déclarée. Cette matrice ne revendique aucune
+conformité de shaping (façonnage) ni de mise en page de bout en bout sur Apple ou
+Android.
 
 ## Corpus et observables invariants
 
@@ -128,20 +130,20 @@ masquer une régression.
 ## Limites connues
 
 - L'analyse Unicode portable et le shaping (façonnage) portable sont portés par
-  des chantiers distincts : les fournisseurs de fontes système (#58) et les
-  liaisons HarfBuzz vers kffi (#59). Tant qu'ils n'ont pas abouti, Apple et
+  des chantiers distincts : le chantier des fournisseurs de polices système et
+  le chantier des liaisons HarfBuzz/kffi. Tant qu'ils n'ont pas abouti, Apple et
   Android ne peuvent exécuter les étapes d'analyse Unicode, de shaping
   (façonnage) ni de mise en page de bout en bout.
-- `iosArm64` est compilé mais exécuté sans appareil sur les runners (exécuteurs)
+- `iosArm64` est compilé mais non exécuté sur appareil sur les exécuteurs
   hébergés ; la route de vérification Kotlin/Native est
   `iosSimulatorArm64Test`.
 - L'APK de test Android exerce actuellement la façade portable publique plutôt
   que le corpus partagé `commonTest`, car `androidDeviceTest` n'hérite pas de
   `commonTest`.
-- La tâche Gradle Managed Device
-  `:kalligraphie:conformance:mediumPhoneAndroidDeviceTest` est déclarée pour la
-  CI mais n'a pas encore été exécutée en CI ; la route Android a été validée en
-  local sur un émulateur via `connectedAndroidDeviceTest`.
+- L'appareil Gradle Managed Device `mediumPhone` est déclaré dans le build,
+  mais sa tâche `:kalligraphie:conformance:mediumPhoneAndroidDeviceTest` n'est pas
+  encore exécutée en CI ; la route Android a été validée en local sur un
+  émulateur via `connectedAndroidDeviceTest`.
 - `:kalligraphie:conformance` est volontairement non publié : le contrat, le
   corpus et l'oracle sont de l'outillage de test, non une dépendance
   consommateur.
