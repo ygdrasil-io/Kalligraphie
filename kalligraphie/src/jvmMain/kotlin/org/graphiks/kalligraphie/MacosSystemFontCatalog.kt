@@ -6,19 +6,19 @@ import org.graphiks.kalligraphie.api.*
 public class MacosSystemFontCatalogOptions(
     roots: List<String> = defaultRoots(),
     /** Inspected paths, including root directories and absent roots. */
-    public val maxPathsToVisit: Int = 512,
+    public val maxPathsToVisit: Int = 2048,
     /** Accepted faces retained by the snapshot. */
-    public val maxFaces: Int = 32,
+    public val maxFaces: Int = 256,
     /** Bytes per original source container. */
     public val maxSourceBytes: Int = 16 * 1024 * 1024,
     /** Retained bytes of unique accepted containers, excluding copies and decoder memory. */
-    public val maxTotalSourceBytes: Int = 64 * 1024 * 1024,
+    public val maxTotalSourceBytes: Int = 256 * 1024 * 1024,
     /** Existing portable representation retention policy. */
     public val materializationCachePolicy: FontMaterializationCachePolicy = FontMaterializationCachePolicy.disabled,
     /** Optional shared scope; closed scopes permit uncached operations. */
     public val cacheScope: FontCacheScope? = null,
     /** Examined faces, including rejected attempts; collections must fit whole in the remaining budget. */
-    public val maxFacesToExamine: Int = 128,
+    public val maxFacesToExamine: Int = 1024,
     /** Returned diagnostics, including diagnostic truncation. */
     public val maxDiagnostics: Int = 64,
 ) {
@@ -27,7 +27,17 @@ public class MacosSystemFontCatalogOptions(
     public val roots: List<String> = directoryOptions.roots
     /** Standard system and user macOS font locations. */
     public companion object {
-        /** Returns standard roots without probing the filesystem. */
+        /**
+         * Returns standard roots without probing the filesystem.
+         *
+         * The class defaults are sized so a stock system volume fits whole: a macOS 27 system
+         * directory exposes about 370 candidate sources holding roughly 790 faces — the classic
+         * pre-installed families such as Menlo, Helvetica, Times, Courier, Monaco or Geneva sit
+         * beyond the 165th face in the documented lexical capture order, so accepted-face and
+         * examination budgets below these defaults omit them. Sources larger than
+         * [maxSourceBytes] are rejected whole before retention, which keeps a full stock
+         * capture near 80 MB of retained sources despite the 256 MB aggregate ceiling.
+         */
         public fun defaultRoots(): List<String> = listOf("/System/Library/Fonts", "/Library/Fonts", "${System.getProperty("user.home")}/Library/Fonts")
     }
 }
