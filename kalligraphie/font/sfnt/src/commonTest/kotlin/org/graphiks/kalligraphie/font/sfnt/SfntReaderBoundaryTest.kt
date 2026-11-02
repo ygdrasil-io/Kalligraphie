@@ -73,6 +73,59 @@ class SfntReaderBoundaryTest {
     }
 
     @Test
+    fun acceptsMacintoshRomanNameRecordsWhenNoUnicodeRecordExists() {
+        val bytes = minimalTrueTypeFont(
+            nameRecords = listOf(
+                nameRecord(platformId = 1, encodingId = 0, languageId = 0, nameId = 1, text = "Menlo"),
+                nameRecord(platformId = 1, encodingId = 0, languageId = 0, nameId = 2, text = "Regular"),
+            ),
+        )
+
+        val result = assertIs<FontOperationResult.Success<ParsedTrueTypeFont>>(
+            SfntReader.readMetadata(FontSource(bytes, FontSourceProvenance("macintosh-names.ttf"))),
+        )
+
+        assertEquals("Menlo", result.value.metadata.familyName)
+        assertEquals("Regular", result.value.metadata.styleName)
+    }
+
+    @Test
+    fun prefersUnicodeNamesOverMacintoshRomanFallback() {
+        val bytes = minimalTrueTypeFont(
+            nameRecords = listOf(
+                nameRecord(platformId = 1, encodingId = 0, languageId = 0, nameId = 1, text = "Wrong Family"),
+                nameRecord(platformId = 1, encodingId = 0, languageId = 0, nameId = 2, text = "Wrong Style"),
+                nameRecord(platformId = 3, encodingId = 1, languageId = 0x0409, nameId = 1, text = "Right Family"),
+                nameRecord(platformId = 3, encodingId = 1, languageId = 0x0409, nameId = 2, text = "Right Style"),
+            ),
+        )
+
+        val result = assertIs<FontOperationResult.Success<ParsedTrueTypeFont>>(
+            SfntReader.readMetadata(FontSource(bytes, FontSourceProvenance("mixed-names.ttf"))),
+        )
+
+        assertEquals("Right Family", result.value.metadata.familyName)
+        assertEquals("Right Style", result.value.metadata.styleName)
+    }
+
+    @Test
+    fun decodesMacintoshRomanHighBytesInFallbackNames() {
+        val bytes = minimalTrueTypeFont(
+            nameRecords = listOf(
+                nameRecord(platformId = 1, encodingId = 0, languageId = 0, nameId = 1, text = "Café Royal"),
+                nameRecord(platformId = 1, encodingId = 0, languageId = 0, nameId = 2, text = "Bold"),
+            ),
+        )
+
+        val result = assertIs<FontOperationResult.Success<ParsedTrueTypeFont>>(
+            SfntReader.readMetadata(FontSource(bytes, FontSourceProvenance("macintosh-high-bytes.ttf"))),
+        )
+
+        assertEquals("Café Royal", result.value.metadata.familyName)
+        assertEquals("Bold", result.value.metadata.styleName)
+    }
+
+    @Test
     fun fixedWidthReadsRejectExtremeOffsetsWithoutIndexingTheArray() {
         val bytes = ByteArray(8)
 
@@ -251,7 +304,9 @@ private fun maxpTable(glyphCount: Int): ByteArray =
     }
 
 private fun nameTable(records: List<NameRecord>): ByteArray {
-    val encodedStrings = records.map { it.text.encodeUtf16Be() }
+    val encodedStrings = records.map { record ->
+        if (record.platformId == 1) record.text.encodeMacRoman() else record.text.encodeUtf16Be()
+    }
     val stringOffset = 6 + records.size * 12
     val totalStringBytes = encodedStrings.sumOf { it.size }
     val bytes = ByteArray(stringOffset + totalStringBytes)
@@ -292,6 +347,39 @@ private fun String.encodeUtf16Be(): ByteArray =
             bytes[index * 2 + 1] = value.toByte()
         }
     }
+
+/** Encodes [this] as Macintosh Roman, rejecting text the classic one-byte codec cannot represent. */
+private fun String.encodeMacRoman(): ByteArray {
+    val highReverse = buildMap {
+        MAC_ROMAN_HIGH_BYTES.forEachIndexed { index, char -> put(char, 0x80 + index) }
+    }
+    return ByteArray(length) { index ->
+        val char = this[index]
+        if (char.code < 0x80) {
+            char.code.toByte()
+        } else {
+            highReverse[char]?.toByte() ?: error("Character '$char' is not encodable in Macintosh Roman.")
+        }
+    }
+}
+
+private val MAC_ROMAN_HIGH_BYTES: CharArray = charArrayOf(
+    '\u00C4', '\u00C5', '\u00C7', '\u00C9', '\u00D1', '\u00D6', '\u00DC', '\u00E1', '\u00E0',
+    '\u00E2', '\u00E4', '\u00E3', '\u00E5', '\u00E7', '\u00E9', '\u00E8', '\u00EA', '\u00EB',
+    '\u00ED', '\u00EC', '\u00EE', '\u00EF', '\u00F1', '\u00F3', '\u00F2', '\u00F4', '\u00F6',
+    '\u00F5', '\u00FA', '\u00F9', '\u00FB', '\u00FC', '\u2020', '\u00B0', '\u00A2', '\u00A3',
+    '\u00A7', '\u2022', '\u00B6', '\u00DF', '\u00AE', '\u00A9', '\u2122', '\u00B4', '\u00A8',
+    '\u2260', '\u00C6', '\u00D8', '\u221E', '\u00B1', '\u2264', '\u2265', '\u00A5', '\u00B5',
+    '\u2202', '\u2211', '\u220F', '\u03C0', '\u222B', '\u00AA', '\u00BA', '\u03A9', '\u00E6',
+    '\u00F8', '\u00BF', '\u00A1', '\u00AC', '\u221A', '\u0192', '\u2248', '\u2206', '\u00AB',
+    '\u00BB', '\u2026', '\u00A0', '\u00C0', '\u00C3', '\u00D5', '\u0152', '\u0153', '\u2013',
+    '\u2014', '\u201C', '\u201D', '\u2018', '\u2019', '\u00F7', '\u25CA', '\u00FF', '\u0178',
+    '\u2044', '\u20AC', '\u2039', '\u203A', '\uFB01', '\uFB02', '\u2021', '\u00B7', '\u201A',
+    '\u201E', '\u2030', '\u00C2', '\u00CA', '\u00C1', '\u00CB', '\u00C8', '\u00CD', '\u00CE',
+    '\u00CF', '\u00CC', '\u00D3', '\u00D4', '\uF8FF', '\u00D2', '\u00DA', '\u00DB', '\u00D9',
+    '\u0131', '\u02C6', '\u02DC', '\u00AF', '\u02D8', '\u02D9', '\u02DA', '\u00B8', '\u02DD',
+    '\u02DB', '\u02C7',
+)
 
 private fun ByteArray.writeTag(offset: Int, tag: String) {
     tag.forEachIndexed { index, char ->

@@ -12,6 +12,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 class MacosSystemFontCatalogTest {
     @Test
@@ -44,6 +45,15 @@ class MacosSystemFontCatalogTest {
             val result = MacosSystemFontCatalog.open(MacosSystemFontCatalogOptions(roots = listOf(root), maxPathsToVisit = 1))
             assertIs<FontError.ResourceLimitExceeded>(assertIs<FontOperationResult.Failure>(result).error)
         }
+    }
+
+    @Test
+    fun parsesStockSystemFacesThatPublishOnlyMacintoshRomanNames() {
+        org.junit.Assume.assumeTrue(System.getProperty("os.name").startsWith("Mac"))
+        val menlo = java.nio.file.Path.of("/System/Library/Fonts/Menlo.ttc")
+        org.junit.Assume.assumeTrue(java.nio.file.Files.exists(menlo))
+        val catalog = catalogSuccess(FontDirectoryCatalog.open(FontDirectoryCatalogOptions(listOf(menlo.toString()))))
+        assertTrue(catalog.faces.any { it.metadata.familyName == "Menlo" })
     }
 
     @Test
